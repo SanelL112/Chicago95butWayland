@@ -1,0 +1,104 @@
+{
+  "hyprland_quickshell_rapl": {
+    "samples": [
+      {
+        "package_0_watts": 13.124,
+        "core_watts": 6.844,
+        "uncore_igpu_watts": 2.555,
+        "dram_watts": 1.255,
+        "psys_platform_watts": 3.055
+      },
+      {
+        "package_0_watts": 9.156,
+        "core_watts": 4.498,
+        "uncore_igpu_watts": 1.079,
+        "dram_watts": 1.006,
+        "psys_platform_watts": 2.616
+      },
+      {
+        "package_0_watts": 8.174,
+        "core_watts": 3.841,
+        "uncore_igpu_watts": 0.771,
+        "dram_watts": 0.946,
+        "psys_platform_watts": 2.489
+      },
+      {
+        "package_0_watts": 14.373,
+        "core_watts": 7.698,
+        "uncore_igpu_watts": 2.933,
+        "dram_watts": 1.318,
+        "psys_platform_watts": 3.201
+      },
+      {
+        "package_0_watts": 8.502,
+        "core_watts": 4.23,
+        "uncore_igpu_watts": 0.72,
+        "dram_watts": 0.945,
+        "psys_platform_watts": 2.505
+      }
+    ],
+    "summary": {
+      "package_0_watts_mean": 10.666,
+      "package_0_watts_stdev": 2.87,
+      "core_watts_mean": 5.422,
+      "core_watts_stdev": 1.73,
+      "uncore_igpu_watts_mean": 1.612,
+      "uncore_igpu_watts_stdev": 1.051,
+      "dram_watts_mean": 1.094,
+      "dram_watts_stdev": 0.179,
+      "psys_platform_watts_mean": 2.773,
+      "psys_platform_watts_stdev": 0.332
+    }
+  },
+  "chicago_wayland_rapl": {
+    "samples": [
+      {
+        "package_0_watts": 9.606,
+        "core_watts": 5.355,
+        "uncore_igpu_watts": 0.686,
+        "dram_watts": 0.969,
+        "psys_platform_watts": 2.706
+      },
+      {
+        "package_0_watts": 8.077,
+        "core_watts": 3.828,
+        "uncore_igpu_watts": 0.708,
+        "dram_watts": 0.945,
+        "psys_platform_watts": 2.477
+      },
+      {
+        "package_0_watts": 8.007,
+        "core_watts": 3.734,
+        "uncore_igpu_watts": 0.728,
+        "dram_watts": 0.949,
+        "psys_platform_watts": 2.457
+      },
+      {
+        "package_0_watts": 8.178,
+        "core_watts": 3.891,
+        "uncore_igpu_watts": 0.742,
+        "dram_watts": 0.947,
+        "psys_platform_watts": 2.473
+      },
+      {
+        "package_0_watts": 8.182,
+        "core_watts": 3.817,
+        "uncore_igpu_watts": 0.821,
+        "dram_watts": 0.956,
+        "psys_platform_watts": 2.47
+      }
+    ],
+    "summary": {
+      "package_0_watts_mean": 8.41,
+      "package_0_watts_stdev": 0.673,
+      "core_watts_mean": 4.125,
+      "core_watts_stdev": 0.69,
+      "uncore_igpu_watts_mean": 0.737,
+      "uncore_igpu_watts_stdev": 0.051,
+      "dram_watts_mean": 0.953,
+      "dram_watts_stdev": 0.01,
+      "psys_platform_watts_mean": 2.517,
+      "psys_platform_watts_stdev": 0.106
+    }
+  }
+}

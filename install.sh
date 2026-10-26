@@ -100,8 +100,13 @@ mkdir -p "$HOME/.local/share/wayland-sessions"
 cp -f "$REPO_DIR/sessions/chicago-wayland.desktop" "$HOME/.local/share/wayland-sessions/chicago-wayland.desktop"
 
 if [[ "$INSTALL_SYSTEM_SESSION" -eq 1 ]]; then
-    echo "      Installing /usr/share/wayland-sessions/chicago-wayland.desktop (requires sudo)..."
-    sudo cp -f "$REPO_DIR/sessions/chicago-wayland.desktop" /usr/share/wayland-sessions/chicago-wayland.desktop
+    echo "      Installing binaries to /usr/local/bin and session entry to /usr/share/wayland-sessions/..."
+    sudo install -m 0755 "$REPO_DIR/bin/start-chicago-wayland" /usr/local/bin/start-chicago-wayland
+    sudo install -m 0755 "$REPO_DIR/bin/chicago-desktop" /usr/local/bin/chicago-desktop
+    sudo install -m 0755 "$REPO_DIR/bin/chicago-taskbar" /usr/local/bin/chicago-taskbar
+    sudo install -m 0755 "$REPO_DIR/bin/chicago-control-panel" /usr/local/bin/chicago-control-panel
+    sudo install -m 0644 "$REPO_DIR/sessions/chicago-wayland.desktop" /usr/share/wayland-sessions/chicago-wayland.desktop
+    sudo restorecon -v /usr/local/bin/start-chicago-wayland /usr/local/bin/chicago-* /usr/share/wayland-sessions/chicago-wayland.desktop 2>/dev/null || true
 else
     echo "      Installed user session: $HOME/.local/share/wayland-sessions/chicago-wayland.desktop"
     echo "      (To also expose in GDM system-wide login screen, run: sudo ./install.sh --system-session)"

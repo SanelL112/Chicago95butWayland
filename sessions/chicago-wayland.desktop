@@ -1,8 +1,8 @@
 [Desktop Entry]
 Name=Windows 95 (Chicago-Wayland)
 Comment=Lightweight Windows 95-inspired Native Wayland Desktop (Labwc + Chicago95)
-Exec=/home/sanellathiya/.local/bin/start-chicago-wayland
-TryExec=/home/sanellathiya/.local/bin/start-chicago-wayland
+Exec=/usr/local/bin/start-chicago-wayland
+TryExec=/usr/local/bin/start-chicago-wayland
 Type=Application
 DesktopNames=Chicago95;wlroots
 Keywords=wayland;compositor;windows95;chicago95;labwc;

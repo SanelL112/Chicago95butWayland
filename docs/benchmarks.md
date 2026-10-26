@@ -28,7 +28,21 @@ All measurements were collected on the target system using `./scripts/benchmark.
 
 ---
 
-## 3. Per-Component Breakdown
+## 3. Measured Hardware Power (Intel RAPL Energy Counters, 5 Samples × 1.2s)
+
+Using root access to `/sys/class/powercap/intel-rapl*/energy_uj` (raw JSON in [`docs/rapl_power_comparison.json`](file:///home/sanellathiya/chicago-wayland/docs/rapl_power_comparison.json)), we measured hardware energy consumption across all 5 Intel RAPL power domains on the Core i7-10750H comparing the active Hyprland + Quickshell (`qs -c ii`) session against Chicago-Wayland (`labwc` + `chicago-desktop` + `chicago-taskbar`):
+
+| Intel RAPL Power Domain | **Hyprland + Quickshell (`qs`)** (Mean ± SD) | **Chicago-Wayland (`labwc` + C11 Shell)** (Mean ± SD) | **Measured Power Savings** |
+| :--- | :--- | :--- | :--- |
+| **CPU Package (`intel-rapl:0`)** | **10.666 W** ± 2.870 W | **8.410 W** ± 0.673 W *(settled: 8.01–8.18 W)* | **-2.256 W (-21.2%)** |
+| **CPU Cores (`intel-rapl:0:0`)** | **5.422 W** ± 1.730 W | **4.125 W** ± 0.690 W *(settled: 3.73–3.89 W)* | **-1.297 W (-23.9%)** |
+| **Intel iGPU / Uncore (`intel-rapl:0:1`)** | **1.612 W** ± 1.051 W | **0.737 W** ± 0.051 W | **-0.875 W (-54.3%)** |
+| **DRAM (`intel-rapl:0:2`)** | **1.094 W** ± 0.179 W | **0.953 W** ± 0.010 W | **-0.141 W (-12.9%)** |
+| **Platform Psys (`intel-rapl:1`)** | **2.773 W** ± 0.332 W | **2.517 W** ± 0.106 W | **-0.256 W (-9.2%)** |
+
+---
+
+## 4. Per-Component Breakdown
 
 ### A. Existing Hyprland Desktop Baseline
 | Process | Idle CPU (%) | Wakeups (ctx/s) | RSS (KB / MiB) | PSS (KB / MiB) |

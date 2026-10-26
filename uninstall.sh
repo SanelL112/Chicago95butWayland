@@ -26,8 +26,9 @@ if [[ "${1:-}" == "--purge-runtime" ]]; then
     rm -rf "$HOME/.local/share/chicago-wayland"
 fi
 
-if [[ "${1:-}" == "--system" ]] && [[ -f /usr/share/wayland-sessions/chicago-wayland.desktop ]]; then
+if [[ "${1:-}" == "--system" ]]; then
     sudo rm -f /usr/share/wayland-sessions/chicago-wayland.desktop
+    sudo rm -f /usr/local/bin/start-chicago-wayland /usr/local/bin/chicago-desktop /usr/local/bin/chicago-taskbar /usr/local/bin/chicago-control-panel
 fi
 
 echo "Uninstall complete. Hyprland and user configurations remain intact."
