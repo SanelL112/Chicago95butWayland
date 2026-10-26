@@ -1,0 +1,176 @@
+{
+  "timestamp": "2026-10-26T18:37:25-0400",
+  "hardware": {
+    "cpu": "Intel(R) Core(TM) i7-10750H CPU @ 2.60GHz",
+    "kernel": "7.2.11-200.fc44.x86_64",
+    "fedora_release": "Fedora release 44 (Forty Four)",
+    "battery_state": "Not charging",
+    "battery_capacity_pct": "93",
+    "brightness": "15600",
+    "max_brightness": "120000",
+    "cpu_governor": "powersave",
+    "cpu_epp": "performance",
+    "nvidia_dgpu_runtime_status": "active"
+  },
+  "historical_battery_discharge_baseline": {
+    "source": "/home/sanellathiya/power-management-fix/desktop-settled.json",
+    "samples_watts": [
+      9.25,
+      8.19,
+      8.1,
+      8.29,
+      8.06,
+      9.63
+    ],
+    "mean_watts": 8.59,
+    "reported_idle_target_watts": 7.0
+  },
+  "hyprland_baseline": {
+    "elapsed_sec": 10.05,
+    "total_cpu_pct": 10.745,
+    "total_ctx_switches_per_sec": 351.39,
+    "total_rss_kb": 1033208,
+    "total_rss_mib": 1008.99,
+    "total_pss_kb": 748907,
+    "total_pss_mib": 731.35,
+    "components": {
+      "Hyprland": {
+        "cpu_pct": 4.179,
+        "ctx_switches_per_sec": 169.63,
+        "rss_kb": 191248,
+        "pss_kb": 114553
+      },
+      "qs": {
+        "cpu_pct": 6.566,
+        "ctx_switches_per_sec": 181.77,
+        "rss_kb": 733856,
+        "pss_kb": 591259
+      },
+      "Xwayland": {
+        "cpu_pct": 0.0,
+        "ctx_switches_per_sec": 0.0,
+        "rss_kb": 108104,
+        "pss_kb": 43095
+      }
+    },
+    "battery_samples": [
+      {
+        "status": "Not charging",
+        "sensor_watts": 0.011809
+      },
+      {
+        "status": "Not charging",
+        "sensor_watts": 0.011808
+      },
+      {
+        "status": "Not charging",
+        "sensor_watts": 0.011809
+      },
+      {
+        "status": "Not charging",
+        "sensor_watts": 0.011809
+      },
+      {
+        "status": "Not charging",
+        "sensor_watts": 0.011808
+      }
+    ]
+  },
+  "chicago_wayland_default": {
+    "elapsed_sec": 10.04,
+    "total_cpu_pct": 0.0,
+    "total_ctx_switches_per_sec": 0.0,
+    "total_rss_kb": 216712,
+    "total_rss_mib": 211.63,
+    "total_pss_kb": 86639,
+    "total_pss_mib": 84.61,
+    "components": {
+      "labwc": {
+        "cpu_pct": 0.0,
+        "ctx_switches_per_sec": 0.0,
+        "rss_kb": 132740,
+        "pss_kb": 55126
+      },
+      "chicago-desktop": {
+        "cpu_pct": 0.0,
+        "ctx_switches_per_sec": 0.0,
+        "rss_kb": 43312,
+        "pss_kb": 16333
+      },
+      "chicago-taskbar": {
+        "cpu_pct": 0.0,
+        "ctx_switches_per_sec": 0.0,
+        "rss_kb": 40660,
+        "pss_kb": 15180
+      }
+    },
+    "battery_samples": [
+      {
+        "status": "Not charging",
+        "sensor_watts": 0.011808
+      },
+      {
+        "status": "Not charging",
+        "sensor_watts": 0.011808
+      },
+      {
+        "status": "Not charging",
+        "sensor_watts": 0.011808
+      },
+      {
+        "status": "Not charging",
+        "sensor_watts": 0.011808
+      },
+      {
+        "status": "Not charging",
+        "sensor_watts": 0.011808
+      }
+    ],
+    "startup_time_ms": 279.0
+  },
+  "chicago_wayland_sfwbar": {
+    "elapsed_sec": 10.04,
+    "total_cpu_pct": 0.0,
+    "total_ctx_switches_per_sec": 0.1,
+    "total_rss_kb": 175436,
+    "total_rss_mib": 171.32,
+    "total_pss_kb": 73440,
+    "total_pss_mib": 71.72,
+    "components": {
+      "labwc": {
+        "cpu_pct": 0.0,
+        "ctx_switches_per_sec": 0.0,
+        "rss_kb": 132508,
+        "pss_kb": 55210
+      },
+      "chicago-desktop": {
+        "cpu_pct": 0.0,
+        "ctx_switches_per_sec": 0.1,
+        "rss_kb": 42928,
+        "pss_kb": 18230
+      }
+    },
+    "battery_samples": [
+      {
+        "status": "Not charging",
+        "sensor_watts": 0.01181
+      },
+      {
+        "status": "Not charging",
+        "sensor_watts": 0.011809
+      },
+      {
+        "status": "Not charging",
+        "sensor_watts": 0.011808
+      },
+      {
+        "status": "Not charging",
+        "sensor_watts": 0.011808
+      },
+      {
+        "status": "Not charging",
+        "sensor_watts": 0.01181
+      }
+    ]
+  }
+}

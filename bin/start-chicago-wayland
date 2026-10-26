@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# start-chicago-wayland: Session launcher for Chicago-Wayland (Windows 95 Native Wayland Desktop)
+# Supports standalone DRM/GDM session, --nested window mode, and --headless test mode.
+set -euo pipefail
+
+REPO_DIR="$HOME/chicago-wayland"
+RUNTIME_DIR="$HOME/.local/share/chicago-wayland/runtime"
+CONFIG_BASE="$HOME/.config/chicago-wayland"
+LABWC_CFG_DIR="$CONFIG_BASE/labwc"
+STATE_DIR="$HOME/.local/state/chicago-wayland"
+BACKUP_DIR="$STATE_DIR/gtk-backup"
+
+MODE="session"
+STARTUP_CMD=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --nested)
+            MODE="nested"
+            shift
+            ;;
+        --headless)
+            MODE="headless"
+            shift
+            ;;
+        --startup|-s)
+            STARTUP_CMD="$2"
+            shift 2
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+export PATH="$REPO_DIR/bin:$HOME/.local/bin:$RUNTIME_DIR/usr/bin:$RUNTIME_DIR/usr/libexec:$PATH"
+if [[ -d "$RUNTIME_DIR/usr/lib64" ]]; then
+    export LD_LIBRARY_PATH="$RUNTIME_DIR/usr/lib64:${LD_LIBRARY_PATH:-}"
+fi
+
+export XDG_DATA_DIRS="$HOME/.local/share:$RUNTIME_DIR/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+export XCURSOR_PATH="$HOME/.local/share/icons:$HOME/.icons:/usr/share/icons"
+export XCURSOR_THEME="Chicago95_Cursor_Black"
+export XCURSOR_SIZE="24"
+export GTK_THEME="Chicago95"
+export GTK_CSD="0"
+export ADW_DISABLE_PORTAL="1"
+export QT_QPA_PLATFORM="wayland;xcb"
+export QT_WAYLAND_DISABLE_WINDOWDECORATION="1"
+export QT_STYLE_OVERRIDE="Windows"
+export MOZ_ENABLE_WAYLAND="1"
+export ELECTRON_OZONE_PLATFORM_HINT="auto"
+export SDL_VIDEODRIVER="wayland"
+
+if [[ ! -d "$LABWC_CFG_DIR" ]]; then
+    LABWC_CFG_DIR="$REPO_DIR/config/labwc"
+fi
+
+restore_gtk_configs() {
+    if [[ -f "$STATE_DIR/gtk-swapped.lock" ]]; then
+        for ver in gtk-3.0 gtk-4.0; do
+            for f in settings.ini gtk.css; do
+                if [[ -f "$BACKUP_DIR/$ver/$f" ]]; then
+                    cp -f "$BACKUP_DIR/$ver/$f" "$HOME/.config/$ver/$f"
+                fi
+            done
+        done
+        rm -f "$STATE_DIR/gtk-swapped.lock"
+    fi
+}
+
+apply_session_gtk_configs() {
+    mkdir -p "$BACKUP_DIR/gtk-3.0" "$BACKUP_DIR/gtk-4.0"
+    if [[ ! -f "$STATE_DIR/gtk-swapped.lock" ]]; then
+        for ver in gtk-3.0 gtk-4.0; do
+            mkdir -p "$HOME/.config/$ver"
+            for f in settings.ini gtk.css; do
+                if [[ -f "$HOME/.config/$ver/$f" ]]; then
+                    cp -f "$HOME/.config/$ver/$f" "$BACKUP_DIR/$ver/$f"
+                fi
+            done
+            cp -f "$REPO_DIR/config/gtk/settings.ini" "$HOME/.config/$ver/settings.ini"
+            cp -f "$REPO_DIR/config/gtk/gtk-win95-override.css" "$HOME/.config/$ver/gtk.css"
+        done
+        touch "$STATE_DIR/gtk-swapped.lock"
+    fi
+}
+
+if [[ "$MODE" == "session" ]]; then
+    export XDG_CURRENT_DESKTOP="Chicago95:wlroots"
+    export XDG_SESSION_DESKTOP="chicago-wayland"
+    export XDG_SESSION_TYPE="wayland"
+    export CHICAGO_NESTED="0"
+    apply_session_gtk_configs
+    trap restore_gtk_configs EXIT INT TERM HUP
+elif [[ "$MODE" == "nested" ]]; then
+    export CHICAGO_NESTED="1"
+elif [[ "$MODE" == "headless" ]]; then
+    export CHICAGO_NESTED="1"
+    export WLR_BACKENDS="headless"
+    export WLR_LIBINPUT_NO_DEVICES="1"
+    unset WAYLAND_DISPLAY DISPLAY
+fi
+
+LABWC_ARGS=(-C "$LABWC_CFG_DIR")
+if [[ -n "$STARTUP_CMD" ]]; then
+    LABWC_ARGS+=(-s "$STARTUP_CMD")
+fi
+
+exec labwc "${LABWC_ARGS[@]}"

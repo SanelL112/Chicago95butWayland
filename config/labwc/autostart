@@ -1,0 +1,54 @@
+#!/usr/bin/env sh
+# Chicago-Wayland Labwc Autostart Script
+# Event-driven, minimal idle overhead
+
+export PATH="$HOME/chicago-wayland/bin:$HOME/.local/bin:$HOME/.local/share/chicago-wayland/runtime/usr/bin:$PATH"
+export LD_LIBRARY_PATH="$HOME/.local/share/chicago-wayland/runtime/usr/lib64:${LD_LIBRARY_PATH:-}"
+
+# 1. Propagate Wayland environment to DBus / systemd only in standalone session mode
+if [ "${CHICAGO_NESTED:-0}" != "1" ]; then
+    dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE 2>/dev/null &
+    if command -v uwsm >/dev/null 2>&1 && uwsm check may-start >/dev/null 2>&1; then
+        uwsm finalize WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP 2>/dev/null &
+    fi
+fi
+
+# 2. Apply Multi-Monitor Layout (kanshi or wlr-randr when on physical DRM outputs)
+if [ "${CHICAGO_NESTED:-0}" != "1" ]; then
+    if command -v kanshi >/dev/null 2>&1 && [ -f "$HOME/.config/chicago-wayland/kanshi/config" ]; then
+        kanshi -c "$HOME/.config/chicago-wayland/kanshi/config" >/dev/null 2>&1 &
+    fi
+fi
+
+# 3. Launch Classic Windows 95 Teal Desktop + Desktop Icons
+if [ "${CHICAGO_DESKTOP_ENABLED:-1}" = "1" ]; then
+    chicago-desktop >/dev/null 2>&1 &
+else
+    swaybg -c "#008080" >/dev/null 2>&1 &
+fi
+
+# 4. Launch Windows 95 Taskbar & Start Menu (default: chicago-taskbar; optional: sfwbar)
+if [ "${CHICAGO_PANEL:-chicago-taskbar}" = "sfwbar" ] && command -v sfwbar >/dev/null 2>&1; then
+    sfwbar -f "$HOME/.config/chicago-wayland/panel/chicago95.sfwbar" >/dev/null 2>&1 &
+else
+    chicago-taskbar >/dev/null 2>&1 &
+fi
+
+# 5. Lightweight Notification Daemon (only in full standalone session so we don't steal host notifications)
+if [ "${CHICAGO_NESTED:-0}" != "1" ] && command -v mako >/dev/null 2>&1; then
+    if ! pgrep -u "$USER" -x mako >/dev/null 2>&1; then
+        mako -c "$HOME/.config/chicago-wayland/mako/config" >/dev/null 2>&1 &
+    fi
+fi
+
+# 6. Idle & Screen Lock Management (only in full standalone session)
+if [ "${CHICAGO_NESTED:-0}" != "1" ] && command -v swayidle >/dev/null 2>&1; then
+    swayidle -w \
+        timeout 600 'swaylock -f -c 008080' \
+        before-sleep 'swaylock -f -c 008080' >/dev/null 2>&1 &
+fi
+
+# 7. Optional Startup Sound (disabled by default for silent/low-power startup; enable via CHICAGO_STARTUP_SOUND=1)
+if [ "${CHICAGO_STARTUP_SOUND:-0}" = "1" ] && [ -f "$HOME/chicago-wayland/themes/sounds/startup.ogg" ]; then
+    pw-play "$HOME/chicago-wayland/themes/sounds/startup.ogg" >/dev/null 2>&1 &
+fi

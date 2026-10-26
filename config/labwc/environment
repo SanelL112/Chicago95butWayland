@@ -1,0 +1,22 @@
+# Chicago-Wayland Session Environment Variables (parsed by labwc)
+XDG_CURRENT_DESKTOP=Chicago95:wlroots
+XDG_SESSION_DESKTOP=chicago-wayland
+XDG_SESSION_TYPE=wayland
+
+# Classic Windows 95 GTK & Cursor Themes
+GTK_THEME=Chicago95
+GTK_CSD=0
+ADW_DISABLE_PORTAL=1
+XCURSOR_THEME=Chicago95_Cursor_Black
+XCURSOR_SIZE=24
+
+# Qt5 / Qt6 Native Wayland + Classic Windows 95 Widget Style + Server-Side Decorations
+QT_QPA_PLATFORM=wayland;xcb
+QT_WAYLAND_DISABLE_WINDOWDECORATION=1
+QT_STYLE_OVERRIDE=Windows
+
+# Native Wayland App Hints
+MOZ_ENABLE_WAYLAND=1
+ELECTRON_OZONE_PLATFORM_HINT=auto
+SDL_VIDEODRIVER=wayland
+_JAVA_AWT_WM_NONREPARENTING=1

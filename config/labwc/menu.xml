@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_menu>
+
+  <menu id="client-menu" label="Window">
+    <item label="Restore">
+      <action name="UnMaximize" />
+    </item>
+    <item label="Move">
+      <action name="Move" />
+    </item>
+    <item label="Size">
+      <action name="Resize" />
+    </item>
+    <item label="Minimize">
+      <action name="Iconify" />
+    </item>
+    <item label="Maximize">
+      <action name="ToggleMaximize" />
+    </item>
+    <separator />
+    <item label="Always on Top">
+      <action name="ToggleAlwaysOnTop" />
+    </item>
+    <separator />
+    <item label="Close">
+      <action name="Close" />
+    </item>
+  </menu>
+
+  <menu id="root-menu" label="Windows 95">
+    <item label="MS-DOS Prompt">
+      <action name="Execute" command="kitty --title 'MS-DOS Prompt' -o background=#000000 -o foreground=#c0c0c0" />
+    </item>
+    <item label="Windows Explorer">
+      <action name="Execute" command="nautilus" />
+    </item>
+    <item label="Find Programs...">
+      <action name="Execute" command="chicago-control-panel --find" />
+    </item>
+    <item label="Run...">
+      <action name="Execute" command="chicago-control-panel --run" />
+    </item>
+    <separator />
+    <item label="Control Panel">
+      <action name="Execute" command="chicago-control-panel" />
+    </item>
+    <item label="Display Properties">
+      <action name="Execute" command="chicago-control-panel --tab display" />
+    </item>
+    <item label="Reload Theme and Config">
+      <action name="Reconfigure" />
+    </item>
+    <separator />
+    <item label="Lock Workstation">
+      <action name="Execute" command="swaylock -f -c 008080" />
+    </item>
+    <item label="Shut Down...">
+      <action name="Execute" command="chicago-control-panel --shutdown" />
+    </item>
+  </menu>
+
+</openbox_menu>

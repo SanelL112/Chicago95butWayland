@@ -1,0 +1,88 @@
+# Name: Chicago95 Native Labwc 0.9.6 Theme
+# Author: Chicago-Wayland Project (based on Chicago95 GPL-3.0+ assets)
+# License: GPL-3.0+
+# Reference: labwc-theme(5) for labwc 0.9.6
+
+# --- Frame & Titlebar Geometry ---
+border.width: 3
+window.titlebar.padding.width: 2
+window.titlebar.padding.height: 2
+
+# --- Titlebar Buttons (Pixel-accurate Win95 14x13 raised buttons) ---
+window.button.width: 14
+window.button.height: 13
+window.button.spacing: 1
+window.button.hover.bg.color: #00000000
+window.button.hover.bg.corner-radius: 0
+
+# --- Title Text Alignment ---
+window.label.text.justify: Left
+
+# --- Active Window (Classic Windows 95 Navy #000080) ---
+window.active.border.color: #c0c0c0
+window.active.indicator.toggled-keybind.color: #c0c0c0
+window.active.title.bg: Solid
+window.active.title.bg.color: #000080
+window.active.label.text.color: #ffffff
+window.active.button.unpressed.image.color: #000000
+window.active.shadow.size: 0
+window.active.shadow.color: #00000000
+
+# --- Inactive Window (Classic Windows 95 Dark Gray #808080) ---
+window.inactive.border.color: #c0c0c0
+window.inactive.title.bg: Solid
+window.inactive.title.bg.color: #808080
+window.inactive.label.text.color: #c0c0c0
+window.inactive.button.unpressed.image.color: #000000
+window.inactive.shadow.size: 0
+window.inactive.shadow.color: #00000000
+
+# --- Root & Window Context Menus ---
+menu.overlap.x: -2
+menu.overlap.y: 0
+menu.width.min: 140
+menu.width.max: 280
+menu.border.width: 2
+menu.border.color: #808080
+menu.items.padding.x: 8
+menu.items.padding.y: 4
+menu.items.bg.color: #c0c0c0
+menu.items.text.color: #000000
+menu.items.active.bg.color: #000080
+menu.items.active.text.color: #ffffff
+menu.separator.width: 1
+menu.separator.padding.width: 2
+menu.separator.padding.height: 3
+menu.separator.color: #808080
+menu.title.bg.color: #000080
+menu.title.text.color: #ffffff
+menu.title.text.justify: Left
+
+# --- On-Screen Display (Alt+Tab Window Switcher) ---
+osd.bg.color: #c0c0c0
+osd.border.width: 2
+osd.border.color: #000000
+osd.label.text.color: #000000
+osd.window-switcher.style-classic.width: 480
+osd.window-switcher.style-classic.padding: 6
+osd.window-switcher.style-classic.item.padding.x: 8
+osd.window-switcher.style-classic.item.padding.y: 4
+osd.window-switcher.style-classic.item.active.border.width: 1
+osd.window-switcher.style-classic.item.active.border.color: #ffffff
+osd.window-switcher.style-classic.item.active.bg.color: #000080
+osd.window-switcher.style-classic.item.icon.size: 16
+osd.window-switcher.preview.border.width: 2
+osd.window-switcher.preview.border.color: #ffffff,#000080,#000000
+osd.workspace-switcher.boxes.width: 20
+osd.workspace-switcher.boxes.height: 20
+osd.workspace-switcher.boxes.border.width: 2
+
+# --- Window Snapping Outlines (Zero-alpha classic outline) ---
+snapping.overlay.region.bg.enabled: no
+snapping.overlay.edge.bg.enabled: no
+snapping.overlay.region.border.enabled: yes
+snapping.overlay.edge.border.enabled: yes
+snapping.overlay.region.border.width: 2
+snapping.overlay.edge.border.width: 2
+snapping.overlay.region.border.color: #ffffff,#000080,#000000
+snapping.overlay.edge.border.color: #ffffff,#000080,#000000

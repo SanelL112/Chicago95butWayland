@@ -1,0 +1,107 @@
+# Chicago-Wayland sfwbar Configuration (Optional Panel Backend)
+# Zero-polling event-driven setup with 60-second clock interval
+
+theme = "Chicago95"
+IconTheme = "Chicago95"
+DisownMinimized = true
+Set Term = "kitty"
+
+function("ToggleMinimize") {
+  [!Minimized] Minimize
+  [Minimized] UnMinimize
+}
+
+function("ToggleMaximize") {
+  [!Maximized] Maximize
+  [Maximized] UnMaximize
+}
+
+menu("winops") {
+  item("Restore / Focus", Focus );
+  item("Minimize", Function "ToggleMinimize" );
+  item("Maximize", Function "ToggleMaximize" );
+  item("Close", Close );
+}
+
+layout {
+  size = "100%"
+  layer = "top"
+  exclusive_zone = "auto"
+  css = "* { min-height: 26px; background-color: #c0c0c0; }"
+
+  button {
+    value = "Start"
+    style = "startbtn"
+    action[1] = Exec "pkill -USR1 chicago-taskbar || chicago-control-panel --find"
+    action[3] = Exec "chicago-control-panel"
+    tooltip = "Click here to begin"
+  }
+
+  taskbar {
+    style = "taskbar"
+    rows = 1;
+    icons = true;
+    labels = true;
+    sort = false;
+    action[3] = Menu "winops"
+  }
+
+  label {
+    css = "* { -GtkWidget-hexpand: true; }"
+  }
+
+  tray {
+    rows = 1
+  }
+
+  label {
+    interval = 60000
+    value = Time("%I:%M %p")
+    style = "clock"
+    action[1] = Exec "chicago-control-panel"
+  }
+}
+
+#CSS
+window {
+  background-color: #c0c0c0;
+  border-top: 2px solid #ffffff;
+}
+
+button {
+  border-radius: 0px;
+  background-color: #c0c0c0;
+  color: #000000;
+  border-top: 2px solid #ffffff;
+  border-left: 2px solid #ffffff;
+  border-right: 2px solid #000000;
+  border-bottom: 2px solid #000000;
+  padding: 2px 6px;
+  margin: 2px 1px;
+  font: 9pt Sans;
+}
+
+button#startbtn {
+  font-weight: bold;
+}
+
+button#taskbar_item.focused {
+  background-color: #dfdfdf;
+  font-weight: bold;
+  border-top: 2px solid #000000;
+  border-left: 2px solid #000000;
+  border-right: 2px solid #ffffff;
+  border-bottom: 2px solid #ffffff;
+}
+
+label#clock {
+  background-color: #c0c0c0;
+  color: #000000;
+  border-top: 1px solid #808080;
+  border-left: 1px solid #808080;
+  border-right: 1px solid #ffffff;
+  border-bottom: 1px solid #ffffff;
+  padding: 2px 6px;
+  margin: 2px;
+  font: 9pt Sans;
+}

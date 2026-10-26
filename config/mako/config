@@ -1,0 +1,18 @@
+# Chicago-Wayland Mako Notification Daemon Config (Windows 95 Tooltip / Balloon Style)
+font=Sans 9
+background-color=#ffffe1
+text-color=#000000
+border-color=#000000
+border-size=1
+border-radius=0
+padding=6
+margin=8
+width=300
+height=100
+default-timeout=5000
+ignore-timeout=0
+icons=1
+max-icon-size=32
+icon-path=/home/sanellathiya/.local/share/icons/Chicago95:/usr/share/icons/hicolor
+anchor=bottom-right
+layer=top

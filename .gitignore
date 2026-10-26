@@ -1,0 +1,3 @@
+src/custom-components/build/
+*.o
+*~
