@@ -1,6 +1,7 @@
 /*
- * Chicago-Wayland GTK3 & GTK4 / libadwaita Windows 95 Palette & Bevel Override
+ * Chicago-Wayland GTK3 & GTK4 / libadwaita Windows 95 Palette & Thunar Override
  * Applied only during active Chicago-Wayland sessions; backed up & restored on exit.
+ * NOTE: Does NOT set `* { box-shadow: none; }` so Chicago95's inset 3D bevels remain intact!
  */
 
 @define-color accent_color #000080;
@@ -27,18 +28,28 @@
 
 * {
   border-radius: 0px;
-  box-shadow: none;
 }
 
 headerbar {
   background-color: #000080;
   background-image: none;
   color: #ffffff;
-  min-height: 24px;
+  min-height: 22px;
   border-bottom: 2px solid #c0c0c0;
 }
 
 headerbar:backdrop {
   background-color: #808080;
   color: #c0c0c0;
+}
+
+/* Chicago95 Thunar Classic Explorer Overrides */
+.thunar .sidebar {
+  border-right: 2px solid #c0c0c0;
+}
+
+.thunar notebook .standard-view {
+  padding: 0px;
+  border-left: 2px solid #c0c0c0;
+  border-right: 2px solid #c0c0c0;
 }

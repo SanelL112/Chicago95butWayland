@@ -29,10 +29,10 @@
 
   <menu id="root-menu" label="Windows 95">
     <item label="MS-DOS Prompt">
-      <action name="Execute" command="kitty --title 'MS-DOS Prompt' -o background=#000000 -o foreground=#c0c0c0" />
+      <action name="Execute" command="kitty -c /home/sanellathiya/.config/chicago-wayland/kitty/kitty.conf --title 'MS-DOS Prompt'" />
     </item>
     <item label="Windows Explorer">
-      <action name="Execute" command="nautilus" />
+      <action name="Execute" command="thunar" />
     </item>
     <item label="Find Programs...">
       <action name="Execute" command="chicago-control-panel --find" />
@@ -45,7 +45,7 @@
       <action name="Execute" command="chicago-control-panel" />
     </item>
     <item label="Display Properties">
-      <action name="Execute" command="chicago-control-panel --tab display" />
+      <action name="Execute" command="chicago-control-panel --display" />
     </item>
     <item label="Reload Theme and Config">
       <action name="Reconfigure" />

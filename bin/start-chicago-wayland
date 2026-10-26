@@ -51,6 +51,7 @@ export QT_STYLE_OVERRIDE="Windows"
 export MOZ_ENABLE_WAYLAND="1"
 export ELECTRON_OZONE_PLATFORM_HINT="auto"
 export SDL_VIDEODRIVER="wayland"
+export KITTY_CONFIG_DIRECTORY="$CONFIG_BASE/kitty"
 
 if [[ ! -d "$LABWC_CFG_DIR" ]]; then
     LABWC_CFG_DIR="$REPO_DIR/config/labwc"
@@ -67,10 +68,13 @@ restore_gtk_configs() {
         done
         rm -f "$STATE_DIR/gtk-swapped.lock"
     fi
+    if [[ -x "$STATE_DIR/saved_gsettings.sh" ]]; then
+        "$STATE_DIR/saved_gsettings.sh" 2>/dev/null || true
+    fi
 }
 
 apply_session_gtk_configs() {
-    mkdir -p "$BACKUP_DIR/gtk-3.0" "$BACKUP_DIR/gtk-4.0"
+    mkdir -p "$BACKUP_DIR/gtk-3.0" "$BACKUP_DIR/gtk-4.0" "$STATE_DIR"
     if [[ ! -f "$STATE_DIR/gtk-swapped.lock" ]]; then
         for ver in gtk-3.0 gtk-4.0; do
             mkdir -p "$HOME/.config/$ver"
@@ -83,6 +87,26 @@ apply_session_gtk_configs() {
             cp -f "$REPO_DIR/config/gtk/gtk-win95-override.css" "$HOME/.config/$ver/gtk.css"
         done
         touch "$STATE_DIR/gtk-swapped.lock"
+    fi
+    if command -v gsettings >/dev/null 2>&1; then
+        CUR_THEME=$(gsettings get org.gnome.desktop.interface gtk-theme 2>/dev/null || echo "")
+        if [[ "$CUR_THEME" != "'Chicago95'" && -n "$CUR_THEME" ]]; then
+            cat << EOF > "$STATE_DIR/saved_gsettings.sh"
+#!/usr/bin/env bash
+gsettings set org.gnome.desktop.interface gtk-theme $(gsettings get org.gnome.desktop.interface gtk-theme)
+gsettings set org.gnome.desktop.interface icon-theme $(gsettings get org.gnome.desktop.interface icon-theme)
+gsettings set org.gnome.desktop.interface cursor-theme $(gsettings get org.gnome.desktop.interface cursor-theme)
+gsettings set org.gnome.desktop.interface color-scheme $(gsettings get org.gnome.desktop.interface color-scheme)
+gsettings set org.gnome.desktop.interface font-name $(gsettings get org.gnome.desktop.interface font-name)
+EOF
+            chmod +x "$STATE_DIR/saved_gsettings.sh"
+        fi
+        gsettings set org.gnome.desktop.interface gtk-theme 'Chicago95' 2>/dev/null || true
+        gsettings set org.gnome.desktop.interface icon-theme 'Chicago95' 2>/dev/null || true
+        gsettings set org.gnome.desktop.interface cursor-theme 'Chicago95_Cursor_Black' 2>/dev/null || true
+        gsettings set org.gnome.desktop.interface color-scheme 'default' 2>/dev/null || true
+        gsettings set org.gnome.desktop.interface font-name 'Helvetica 8' 2>/dev/null || true
+        gsettings set org.gnome.desktop.wm.preferences button-layout 'icon:minimize,maximize,close' 2>/dev/null || true
     fi
 }
 
@@ -107,4 +131,8 @@ if [[ -n "$STARTUP_CMD" ]]; then
     LABWC_ARGS+=(-s "$STARTUP_CMD")
 fi
 
-exec labwc "${LABWC_ARGS[@]}"
+if [[ "$MODE" == "session" ]]; then
+    labwc "${LABWC_ARGS[@]}"
+else
+    exec labwc "${LABWC_ARGS[@]}"
+fi
