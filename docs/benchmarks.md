@@ -28,23 +28,23 @@ All measurements were collected on the target system using `./scripts/benchmark.
 
 ---
 
-## 3. Measured Hardware Power (Intel RAPL Energy Counters, 5 Samples × 1.2s)
+## 3. Measured Hardware Power (Intel RAPL Energy Counters, 3-Monitor DRM/KMS Session)
 
-Using root access to `/sys/class/powercap/intel-rapl*/energy_uj` (raw JSON in [`docs/rapl_power_comparison.json`](file:///home/sanellathiya/chicago-wayland/docs/rapl_power_comparison.json)), we measured hardware energy consumption across all 5 Intel RAPL power domains on the Core i7-10750H comparing the active Hyprland + Quickshell (`qs -c ii`) session against Chicago-Wayland (`labwc` + `chicago-desktop` + `chicago-taskbar`):
+Using root access to `/sys/class/powercap/intel-rapl*/energy_uj` (raw JSON in [`docs/rapl_power_comparison.json`](file:///home/sanellathiya/chicago-wayland/docs/rapl_power_comparison.json) and [`docs/standalone_session_benchmark.json`](file:///home/sanellathiya/chicago-wayland/docs/standalone_session_benchmark.json)), we measured hardware energy consumption across all 5 Intel RAPL power domains on the Core i7-10750H driving all 3 displays (`eDP-1` 1920×1200@60Hz, `DP-6` 1920×1080@75Hz, `DP-9` 1920×1080@60Hz), comparing the standalone Hyprland + Quickshell (`qs -c ii`) session against the standalone GDM `chicago-wayland` DRM/KMS session:
 
-| Intel RAPL Power Domain | **Hyprland + Quickshell (`qs`)** (Mean ± SD) | **Chicago-Wayland (`labwc` + C11 Shell)** (Mean ± SD) | **Measured Power Savings** |
+| Intel RAPL Power Domain | **Hyprland + Quickshell (`qs`)** (Mean ± SD) | **Standalone `chicago-wayland` DRM/KMS** (Median / Mean ± SD) | **Measured Power Savings (Median)** |
 | :--- | :--- | :--- | :--- |
-| **CPU Package (`intel-rapl:0`)** | **10.666 W** ± 2.870 W | **8.410 W** ± 0.673 W *(settled: 8.01–8.18 W)* | **-2.256 W (-21.2%)** |
-| **CPU Cores (`intel-rapl:0:0`)** | **5.422 W** ± 1.730 W | **4.125 W** ± 0.690 W *(settled: 3.73–3.89 W)* | **-1.297 W (-23.9%)** |
-| **Intel iGPU / Uncore (`intel-rapl:0:1`)** | **1.612 W** ± 1.051 W | **0.737 W** ± 0.051 W | **-0.875 W (-54.3%)** |
-| **DRAM (`intel-rapl:0:2`)** | **1.094 W** ± 0.179 W | **0.953 W** ± 0.010 W | **-0.141 W (-12.9%)** |
-| **Platform Psys (`intel-rapl:1`)** | **2.773 W** ± 0.332 W | **2.517 W** ± 0.106 W | **-0.256 W (-9.2%)** |
+| **CPU Package (`intel-rapl:0`)** | **10.666 W** ± 2.870 W | **8.181 W** *(mean: 8.576 W ± 0.679 W, min: 8.098 W)* | **-2.485 W (-23.3%)** |
+| **CPU Cores (`intel-rapl:0:0`)** | **5.422 W** ± 1.730 W | **4.364 W** *(mean: 4.752 W ± 0.689 W, min: 4.280 W)* | **-1.058 W (-19.5%)** |
+| **Intel iGPU / Uncore (`intel-rapl:0:1`)** | **1.612 W** ± 1.051 W | **0.272 W** *(mean: 0.278 W ± 0.020 W, min: 0.264 W)* | **-1.340 W (-83.1%)** |
+| **DRAM (`intel-rapl:0:2`)** | **1.094 W** ± 0.179 W | **0.961 W** *(mean: 0.959 W ± 0.006 W, min: 0.950 W)* | **-0.133 W (-12.2%)** |
+| **Platform Psys (`intel-rapl:1`)** | **2.773 W** ± 0.332 W | **2.489 W** *(mean: 2.539 W ± 0.089 W, min: 2.482 W)* | **-0.284 W (-10.2%)** |
 
 ---
 
 ## 4. Per-Component Breakdown
 
-### A. Existing Hyprland Desktop Baseline
+### A. Existing Hyprland Desktop Baseline (3 Displays)
 | Process | Idle CPU (%) | Wakeups (ctx/s) | RSS (KB / MiB) | PSS (KB / MiB) |
 | :--- | :--- | :--- | :--- | :--- |
 | `Hyprland` | 4.179% | 169.63 / s | 191,248 KB (186.8 MiB) | 114,553 KB (111.9 MiB) |
@@ -52,14 +52,17 @@ Using root access to `/sys/class/powercap/intel-rapl*/energy_uj` (raw JSON in [`
 | `Xwayland` (persistent) | 0.000% | 0.00 / s | 108,104 KB (105.6 MiB) | 43,095 KB (42.1 MiB) |
 | **Total** | **10.745%** | **351.39 / s** | **1,033,208 KB (1,009.0 MiB)** | **748,907 KB (731.4 MiB)** |
 
-### B. Chicago-Wayland Default Stack
-| Process | Idle CPU (%) | Wakeups (ctx/s) | RSS (KB / MiB) | PSS (KB / MiB) |
+### B. Standalone `chicago-wayland` DRM/KMS Session (3 Displays: `eDP-1`, `DP-6`, `DP-9`)
+| Process | Idle CPU (%) | Wakeups (ctx/s) | RSS (MiB) | PSS (MiB) |
 | :--- | :--- | :--- | :--- | :--- |
-| `labwc` (`0.9.6`) | 0.000% | 0.00 / s | 132,740 KB (129.6 MiB) | 55,126 KB (53.8 MiB) |
-| `chicago-desktop` | 0.000% | 0.00 / s | 43,312 KB (42.3 MiB) | 16,333 KB (15.9 MiB) |
-| `chicago-taskbar` | 0.000% | 0.00 / s | 40,660 KB (39.7 MiB) | 15,180 KB (14.8 MiB) |
-| `Xwayland` (on-demand) | 0.000% | 0.00 / s | 0 KB (not running at idle) | 0 KB |
-| **Total** | **0.000%** | **0.00 / s** | **216,712 KB (211.6 MiB)** | **86,639 KB (84.6 MiB)** |
+| `labwc` (`0.9.6`) | 0.000% | 20.31 / s | 151.00 MiB | 69.23 MiB |
+| `chicago-desktop` | 0.000% | 0.00 / s | 64.61 MiB | 26.47 MiB |
+| `chicago-taskbar` | 0.000% | 0.00 / s | 49.87 MiB | 22.29 MiB |
+| `mako` | 0.000% | 0.00 / s | 25.58 MiB | 6.59 MiB |
+| `kanshi` | 0.000% | 0.00 / s | 2.69 MiB | 0.39 MiB |
+| `swayidle` | 0.000% | 0.33 / s | 3.57 MiB | 0.40 MiB |
+| `Xwayland` (on-demand) | 0.000% | 0.00 / s | 0.00 MiB (not running at idle) | 0.00 MiB |
+| **Total (3 Displays)** | **0.000%** | **20.64 / s** | **297.32 MiB** | **125.37 MiB** |
 
 ---
 

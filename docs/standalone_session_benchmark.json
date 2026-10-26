@@ -1,0 +1,89 @@
+{
+  "session": "Standalone Chicago-Wayland DRM/KMS (3 monitors: eDP-1, DP-6@75Hz, DP-9@60Hz)",
+  "pids": [
+    33256,
+    33410,
+    33411,
+    33412,
+    33428,
+    33429
+  ],
+  "cpu_pct_mean": 0.399,
+  "cpu_pct_median": 0.665,
+  "ctx_per_sec_mean": 21.67,
+  "ctx_per_sec_median": 21.27,
+  "rss_mib": 297.32,
+  "pss_mib": 125.33,
+  "rapl_summary": {
+    "intel-rapl:0 (package-0)": {
+      "mean_watts": 8.576,
+      "median_watts": 8.181,
+      "min_watts": 8.098,
+      "max_watts": 9.709,
+      "stdev_watts": 0.679,
+      "samples": [
+        9.709,
+        8.18,
+        8.098,
+        8.181,
+        8.71
+      ]
+    },
+    "intel-rapl:0:0 (core)": {
+      "mean_watts": 4.752,
+      "median_watts": 4.364,
+      "min_watts": 4.28,
+      "max_watts": 5.9,
+      "stdev_watts": 0.689,
+      "samples": [
+        5.9,
+        4.321,
+        4.28,
+        4.364,
+        4.895
+      ]
+    },
+    "intel-rapl:0:1 (uncore)": {
+      "mean_watts": 0.278,
+      "median_watts": 0.272,
+      "min_watts": 0.264,
+      "max_watts": 0.313,
+      "stdev_watts": 0.02,
+      "samples": [
+        0.272,
+        0.313,
+        0.272,
+        0.264,
+        0.269
+      ]
+    },
+    "intel-rapl:0:2 (dram)": {
+      "mean_watts": 0.959,
+      "median_watts": 0.961,
+      "min_watts": 0.95,
+      "max_watts": 0.965,
+      "stdev_watts": 0.006,
+      "samples": [
+        0.965,
+        0.961,
+        0.95,
+        0.954,
+        0.963
+      ]
+    },
+    "intel-rapl:1 (psys)": {
+      "mean_watts": 2.539,
+      "median_watts": 2.489,
+      "min_watts": 2.482,
+      "max_watts": 2.693,
+      "stdev_watts": 0.089,
+      "samples": [
+        2.693,
+        2.482,
+        2.489,
+        2.489,
+        2.54
+      ]
+    }
+  }
+}
