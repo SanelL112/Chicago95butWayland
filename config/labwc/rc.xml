@@ -140,7 +140,10 @@
       <action name="Execute" command="kitty -c /home/sanellathiya/.config/chicago-wayland/kitty/kitty.conf --title 'MS-DOS Prompt'" />
     </keybind>
     <keybind key="W-l">
-      <action name="Execute" command="swaylock -f -c 008080" />
+      <action name="Execute" command="chicago-lock" />
+    </keybind>
+    <keybind key="C-A-Delete">
+      <action name="Execute" command="chicago-lock" />
     </keybind>
     <keybind key="W-d">
       <action name="Execute" command="pkill -USR2 chicago-taskbar" />

@@ -38,7 +38,7 @@ if [[ -d "$RUNTIME_DIR/usr/lib64" ]]; then
     export LD_LIBRARY_PATH="$RUNTIME_DIR/usr/lib64:${LD_LIBRARY_PATH:-}"
 fi
 
-export XDG_DATA_DIRS="$HOME/.local/share:$RUNTIME_DIR/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+export XDG_DATA_DIRS="$HOME/.local/share:$RUNTIME_DIR/usr/share:$HOME/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share:/var/lib/snapd/desktop}"
 export XCURSOR_PATH="$HOME/.local/share/icons:$HOME/.icons:/usr/share/icons"
 export XCURSOR_THEME="Chicago95_Cursor_Black"
 export XCURSOR_SIZE="24"

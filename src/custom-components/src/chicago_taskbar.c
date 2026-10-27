@@ -45,17 +45,13 @@ typedef struct {
     GtkWidget *icons[MAX_BAR_MONITORS];
 } ToplevelItem;
 
-typedef struct {
-    char *name;
-    char *exec;
-    char *icon;
-    char *category;
-} DesktopAppEntry;
+typedef ChicagoAppEntry DesktopAppEntry;
 
 typedef struct {
     GdkMonitor *monitor;
     GtkWidget *bar_window;
     GtkWidget *start_button;
+    GtkWidget *pins_box;
     GtkWidget *task_box;
     GtkWidget *clock_label;
 } BarInstance;
@@ -67,6 +63,7 @@ typedef struct {
 
     /* Hover-cascading Start Menu & Flyout Layer Surfaces */
     GtkWidget *start_menu_win;
+    GtkWidget *search_entry;
     GtkWidget *flyout_l1_win;
     GtkWidget *flyout_l1_box;
     GtkWidget *flyout_l2_win;
@@ -98,6 +95,7 @@ typedef struct {
 
     GList *toplevels;
     GList *app_entries;
+    GFileMonitor *pins_monitor;
     gboolean desktop_shown_minimized;
 } TaskbarApp;
 
@@ -234,6 +232,75 @@ static void on_task_ctx_close(GtkMenuItem *mi, gpointer data) {
     wl_display_flush(g_tb.wl_display);
 }
 
+static DesktopAppEntry *find_matching_app_for_toplevel(ToplevelItem *item) {
+    if (!item) return NULL;
+    for (GList *l = g_tb.app_entries; l != NULL; l = l->next) {
+        DesktopAppEntry *e = (DesktopAppEntry *)l->data;
+        if (item->app_id && *item->app_id) {
+            if (e->icon && g_ascii_strcasecmp(e->icon, item->app_id) == 0) return e;
+            if (e->name && g_ascii_strcasecmp(e->name, item->app_id) == 0) return e;
+            if (e->desktop_path && strstr(e->desktop_path, item->app_id) != NULL) return e;
+            if (e->exec && strstr(e->exec, item->app_id) != NULL) return e;
+        }
+        if (item->title && *item->title && e->name && g_ascii_strcasecmp(e->name, item->title) == 0) {
+            return e;
+        }
+    }
+    return NULL;
+}
+
+static void resolve_toplevel_app_info(ToplevelItem *item, const char **out_name, const char **out_icon, const char **out_exec, const char **out_path) {
+    DesktopAppEntry *e = find_matching_app_for_toplevel(item);
+    if (e) {
+        *out_name = e->name;
+        *out_icon = e->icon;
+        *out_exec = e->exec;
+        *out_path = e->desktop_path;
+        return;
+    }
+    *out_name = (item->title && *item->title) ? item->title : ((item->app_id && *item->app_id) ? item->app_id : "Application");
+    *out_icon = (item->app_id && *item->app_id) ? item->app_id : "application-x-executable";
+    *out_exec = (item->app_id && *item->app_id) ? item->app_id : "";
+    *out_path = "";
+}
+
+static void on_task_ctx_toggle_pin(GtkMenuItem *mi, gpointer data) {
+    (void)mi;
+    ToplevelItem *item = (ToplevelItem *)data;
+    const char *name, *icon, *exec, *path;
+    resolve_toplevel_app_info(item, &name, &icon, &exec, &path);
+    if (!exec || !*exec) return;
+    if (chicago_pins_is_pinned(name, exec)) {
+        chicago_pins_remove(name, exec);
+    } else {
+        chicago_pins_add(name, icon, exec, path);
+    }
+}
+
+static void on_task_ctx_relaunch_dgpu(GtkMenuItem *mi, gpointer data) {
+    (void)mi;
+    ToplevelItem *item = (ToplevelItem *)data;
+    const char *name, *icon, *exec, *path;
+    resolve_toplevel_app_info(item, &name, &icon, &exec, &path);
+    if (exec && *exec) {
+        if (item->handle) {
+            zwlr_foreign_toplevel_handle_v1_close(item->handle);
+            wl_display_flush(g_tb.wl_display);
+        }
+        chicago_launch_with_dgpu(exec);
+    }
+}
+
+static void on_task_ctx_desktop_shortcut(GtkMenuItem *mi, gpointer data) {
+    (void)mi;
+    ToplevelItem *item = (ToplevelItem *)data;
+    const char *name, *icon, *exec, *path;
+    resolve_toplevel_app_info(item, &name, &icon, &exec, &path);
+    if (exec && *exec) {
+        chicago_create_desktop_shortcut(name, icon, exec, FALSE);
+    }
+}
+
 static gboolean on_task_btn_press(GtkWidget *widget, GdkEventButton *event, gpointer data) {
     (void)widget;
     ToplevelItem *item = (ToplevelItem *)data;
@@ -256,7 +323,25 @@ static gboolean on_task_btn_press(GtkWidget *widget, GdkEventButton *event, gpoi
 
         gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
 
-        GtkWidget *cls_mi = gtk_menu_item_new_with_label("Close");
+        const char *name, *icon, *exec, *path;
+        resolve_toplevel_app_info(item, &name, &icon, &exec, &path);
+        gboolean pinned = chicago_pins_is_pinned(name, exec);
+
+        GtkWidget *pin_mi = gtk_menu_item_new_with_label(pinned ? "Unpin from Taskbar" : "Pin to Taskbar");
+        g_signal_connect(pin_mi, "activate", G_CALLBACK(on_task_ctx_toggle_pin), item);
+        gtk_menu_shell_append(GTK_MENU_SHELL(menu), pin_mi);
+
+        GtkWidget *gpu_mi = gtk_menu_item_new_with_label("Relaunch on Dedicated GPU (NVIDIA Quadro T1000)");
+        g_signal_connect(gpu_mi, "activate", G_CALLBACK(on_task_ctx_relaunch_dgpu), item);
+        gtk_menu_shell_append(GTK_MENU_SHELL(menu), gpu_mi);
+
+        GtkWidget *desk_mi = gtk_menu_item_new_with_label("Create Shortcut on Desktop");
+        g_signal_connect(desk_mi, "activate", G_CALLBACK(on_task_ctx_desktop_shortcut), item);
+        gtk_menu_shell_append(GTK_MENU_SHELL(menu), desk_mi);
+
+        gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+
+        GtkWidget *cls_mi = gtk_menu_item_new_with_label("Close (Alt+F4)");
         g_signal_connect(cls_mi, "activate", G_CALLBACK(on_task_ctx_close), item);
         gtk_menu_shell_append(GTK_MENU_SHELL(menu), cls_mi);
 
@@ -420,88 +505,12 @@ static const struct wl_registry_listener registry_listener = {
  * Hover-Cascading Windows 95 Start Menu & Flyout Implementation
  * ========================================================================= */
 
-static gint compare_app_entries(gconstpointer a, gconstpointer b) {
-    const DesktopAppEntry *ea = (const DesktopAppEntry *)a;
-    const DesktopAppEntry *eb = (const DesktopAppEntry *)b;
-    return g_ascii_strcasecmp(ea->name ? ea->name : "", eb->name ? eb->name : "");
-}
-
 static void scan_desktop_applications(void) {
-    const char *dirs[] = {
-        "/usr/share/applications",
-        "/usr/local/share/applications",
-        NULL
-    };
-    char user_dir[512];
-    snprintf(user_dir, sizeof(user_dir), "%s/.local/share/applications", g_get_home_dir());
-
-    const char *all_dirs[4] = { dirs[0], dirs[1], user_dir, NULL };
-    GHashTable *seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-
-    for (int d = 0; all_dirs[d] != NULL; d++) {
-        GDir *dir = g_dir_open(all_dirs[d], 0, NULL);
-        if (!dir) continue;
-        const char *fname;
-        while ((fname = g_dir_read_name(dir)) != NULL) {
-            if (!g_str_has_suffix(fname, ".desktop")) continue;
-            char full[512];
-            snprintf(full, sizeof(full), "%s/%s", all_dirs[d], fname);
-            GKeyFile *kf = g_key_file_new();
-            if (g_key_file_load_from_file(kf, full, G_KEY_FILE_NONE, NULL)) {
-                gboolean no_display = g_key_file_get_boolean(kf, "Desktop Entry", "NoDisplay", NULL);
-                gboolean hidden = g_key_file_get_boolean(kf, "Desktop Entry", "Hidden", NULL);
-                char *name = g_key_file_get_locale_string(kf, "Desktop Entry", "Name", NULL, NULL);
-                char *exec = g_key_file_get_string(kf, "Desktop Entry", "Exec", NULL);
-                char *icon = g_key_file_get_string(kf, "Desktop Entry", "Icon", NULL);
-                char *cats = g_key_file_get_string(kf, "Desktop Entry", "Categories", NULL);
-
-                if (!no_display && !hidden && name && exec && !g_hash_table_contains(seen, name)) {
-                    g_hash_table_add(seen, g_strdup(name));
-                    for (char *p = exec; *p; p++) {
-                        if (*p == '%' && *(p + 1) != '\0') {
-                            *p = '\0';
-                            break;
-                        }
-                    }
-                    DesktopAppEntry *entry = g_malloc0(sizeof(DesktopAppEntry));
-                    entry->name = g_strdup(name);
-                    entry->exec = g_strdup(g_strstrip(exec));
-                    entry->icon = g_strdup(icon ? icon : "application-x-executable");
-                    if (cats) {
-                        if (strstr(cats, "System") || strstr(cats, "Monitor"))
-                            entry->category = g_strdup("System Tools");
-                        else if (strstr(cats, "Settings") || strstr(cats, "DesktopSettings"))
-                            entry->category = g_strdup("Settings");
-                        else if (strstr(cats, "Network") || strstr(cats, "WebBrowser"))
-                            entry->category = g_strdup("Internet");
-                        else if (strstr(cats, "Audio") || strstr(cats, "Video") || strstr(cats, "Multimedia"))
-                            entry->category = g_strdup("Multimedia");
-                        else if (strstr(cats, "Development") || strstr(cats, "IDE"))
-                            entry->category = g_strdup("Development");
-                        else if (strstr(cats, "Graphics"))
-                            entry->category = g_strdup("Graphics");
-                        else if (strstr(cats, "Office"))
-                            entry->category = g_strdup("Office");
-                        else if (strstr(cats, "Game"))
-                            entry->category = g_strdup("Games");
-                        else
-                            entry->category = g_strdup("Accessories");
-                    } else {
-                        entry->category = g_strdup("Accessories");
-                    }
-                    g_tb.app_entries = g_list_prepend(g_tb.app_entries, entry);
-                }
-                g_free(name);
-                g_free(exec);
-                g_free(icon);
-                g_free(cats);
-            }
-            g_key_file_free(kf);
-        }
-        g_dir_close(dir);
+    if (g_tb.app_entries) {
+        g_list_free_full(g_tb.app_entries, chicago_app_entry_free);
+        g_tb.app_entries = NULL;
     }
-    g_hash_table_destroy(seen);
-    g_tb.app_entries = g_list_sort(g_tb.app_entries, compare_app_entries);
+    g_tb.app_entries = chicago_scan_all_desktop_apps();
 }
 
 static void clear_container(GtkWidget *container) {
@@ -524,10 +533,38 @@ static void on_launch_cmd_btn(GtkWidget *btn, gpointer data) {
     chicago_spawn_command(cmd);
 }
 
-static GtkWidget *make_flyout_row(const char *label_text, const char *icon_name, const char *cmd, gboolean has_arrow) {
+typedef struct {
+    char *name;
+    char *icon;
+    char *exec;
+    char *desktop_path;
+} AppRowCtx;
+
+static void app_row_ctx_free(gpointer data, GClosure *closure) {
+    (void)closure;
+    AppRowCtx *rc = (AppRowCtx *)data;
+    if (!rc) return;
+    g_free(rc->name);
+    g_free(rc->icon);
+    g_free(rc->exec);
+    g_free(rc->desktop_path);
+    g_free(rc);
+}
+
+static gboolean on_app_row_button_press(GtkWidget *widget, GdkEventButton *event, gpointer data) {
+    (void)widget;
+    AppRowCtx *rc = (AppRowCtx *)data;
+    if (event->button == 3 && rc && rc->exec && *rc->exec) {
+        chicago_popup_app_context_menu(rc->name, rc->icon, rc->exec, rc->desktop_path, event);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static GtkWidget *make_flyout_row_ex(const char *label_text, const char *icon_name, const char *cmd, const char *desktop_path, gboolean has_arrow) {
     GtkWidget *btn = gtk_button_new();
     gtk_style_context_add_class(gtk_widget_get_style_context(btn), "win95-menuitem");
-    gtk_widget_add_events(btn, GDK_ENTER_NOTIFY_MASK);
+    gtk_widget_add_events(btn, GDK_ENTER_NOTIFY_MASK | GDK_BUTTON_PRESS_MASK);
 
     GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     GdkPixbuf *pb = chicago_load_icon(icon_name, 16);
@@ -552,8 +589,19 @@ static GtkWidget *make_flyout_row(const char *label_text, const char *icon_name,
     if (cmd) {
         g_signal_connect_data(btn, "clicked", G_CALLBACK(on_launch_cmd_btn),
                               g_strdup(cmd), free_closure_str, 0);
+        AppRowCtx *rc = g_malloc0(sizeof(AppRowCtx));
+        rc->name = g_strdup(label_text ? label_text : "App");
+        rc->icon = g_strdup(icon_name ? icon_name : "application-x-executable");
+        rc->exec = g_strdup(cmd);
+        rc->desktop_path = g_strdup(desktop_path ? desktop_path : "");
+        g_signal_connect_data(btn, "button-press-event", G_CALLBACK(on_app_row_button_press),
+                              rc, app_row_ctx_free, 0);
     }
     return btn;
+}
+
+static GtkWidget *make_flyout_row(const char *label_text, const char *icon_name, const char *cmd, gboolean has_arrow) {
+    return make_flyout_row_ex(label_text, icon_name, cmd, "", has_arrow);
 }
 
 /* Hovering a category inside Programs ▸ cascades open Flyout Level 2 */
@@ -566,14 +614,15 @@ static gboolean on_hover_program_category(GtkWidget *widget, GdkEventCrossing *e
 
     GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-    gtk_widget_set_size_request(scroll, 220, 280);
+    gtk_widget_set_size_request(scroll, 230, 300);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1);
     int count = 0;
+    gboolean show_all = (g_strcmp0(cat_name, "All Programs") == 0);
     for (GList *l = g_tb.app_entries; l != NULL; l = l->next) {
         DesktopAppEntry *e = (DesktopAppEntry *)l->data;
-        if (g_strcmp0(e->category, cat_name) == 0) {
-            GtkWidget *row = make_flyout_row(e->name, e->icon, e->exec, FALSE);
+        if (show_all || g_strcmp0(e->category, cat_name) == 0) {
+            GtkWidget *row = make_flyout_row_ex(e->name, e->icon, e->exec, e->desktop_path, FALSE);
             gtk_box_pack_start(GTK_BOX(vbox), row, FALSE, FALSE, 0);
             count++;
         }
@@ -588,8 +637,8 @@ static gboolean on_hover_program_category(GtkWidget *widget, GdkEventCrossing *e
 
     if (gtk_layer_is_supported() && g_tb.active_popup_monitor) {
         gtk_layer_set_monitor(GTK_WINDOW(g_tb.flyout_l2_win), g_tb.active_popup_monitor);
-        gtk_layer_set_margin(GTK_WINDOW(g_tb.flyout_l2_win), GTK_LAYER_SHELL_EDGE_LEFT, 388);
-        gtk_layer_set_margin(GTK_WINDOW(g_tb.flyout_l2_win), GTK_LAYER_SHELL_EDGE_BOTTOM, 140);
+        gtk_layer_set_margin(GTK_WINDOW(g_tb.flyout_l2_win), GTK_LAYER_SHELL_EDGE_LEFT, 398);
+        gtk_layer_set_margin(GTK_WINDOW(g_tb.flyout_l2_win), GTK_LAYER_SHELL_EDGE_BOTTOM, 120);
     }
     gtk_widget_show_all(g_tb.flyout_l2_win);
     return FALSE;
@@ -610,12 +659,14 @@ static gboolean on_hover_start_programs(GtkWidget *widget, GdkEventCrossing *eve
     clear_container(g_tb.flyout_l1_box);
 
     const char *categories[] = {
-        "Accessories", "System Tools", "Settings", "Internet",
-        "Multimedia", "Development", "Graphics", "Office", "Games", NULL
+        "All Programs",
+        "Multimedia", "Internet", "Games", "Development",
+        "Graphics", "Office", "System Tools", "Settings", "Accessories", NULL
     };
     const char *cat_icons[] = {
-        "applications-accessories", "applications-system", "preferences-system", "applications-internet",
-        "applications-multimedia", "applications-development", "applications-graphics", "applications-office", "applications-games", NULL
+        "folder",
+        "applications-multimedia", "applications-internet", "applications-games", "applications-development",
+        "applications-graphics", "applications-office", "applications-system", "preferences-system", "applications-accessories", NULL
     };
 
     for (int i = 0; categories[i] != NULL; i++) {
@@ -623,6 +674,9 @@ static gboolean on_hover_start_programs(GtkWidget *widget, GdkEventCrossing *eve
         g_signal_connect(row, "enter-notify-event", G_CALLBACK(on_hover_program_category), (gpointer)categories[i]);
         g_signal_connect(row, "clicked", G_CALLBACK(on_hover_program_category), (gpointer)categories[i]);
         gtk_box_pack_start(GTK_BOX(g_tb.flyout_l1_box), row, FALSE, FALSE, 0);
+        if (i == 0) {
+            gtk_box_pack_start(GTK_BOX(g_tb.flyout_l1_box), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 2);
+        }
     }
 
     gtk_box_pack_start(GTK_BOX(g_tb.flyout_l1_box), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 2);
@@ -639,11 +693,81 @@ static gboolean on_hover_start_programs(GtkWidget *widget, GdkEventCrossing *eve
 
     if (gtk_layer_is_supported() && g_tb.active_popup_monitor) {
         gtk_layer_set_monitor(GTK_WINDOW(g_tb.flyout_l1_win), g_tb.active_popup_monitor);
-        gtk_layer_set_margin(GTK_WINDOW(g_tb.flyout_l1_win), GTK_LAYER_SHELL_EDGE_LEFT, 206);
-        gtk_layer_set_margin(GTK_WINDOW(g_tb.flyout_l1_win), GTK_LAYER_SHELL_EDGE_BOTTOM, 160);
+        gtk_layer_set_margin(GTK_WINDOW(g_tb.flyout_l1_win), GTK_LAYER_SHELL_EDGE_LEFT, 214);
+        gtk_layer_set_margin(GTK_WINDOW(g_tb.flyout_l1_win), GTK_LAYER_SHELL_EDGE_BOTTOM, 140);
     }
     gtk_widget_show_all(g_tb.flyout_l1_win);
     return FALSE;
+}
+
+static void on_start_search_changed(GtkEditable *editable, gpointer data) {
+    (void)data;
+    const char *q = gtk_entry_get_text(GTK_ENTRY(editable));
+    if (!g_tb.flyout_l1_win || !g_tb.flyout_l1_box) return;
+    if (g_tb.flyout_l2_win) gtk_widget_hide(g_tb.flyout_l2_win);
+
+    if (!q || !*q) {
+        gtk_widget_hide(g_tb.flyout_l1_win);
+        return;
+    }
+
+    clear_container(g_tb.flyout_l1_box);
+    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_size_request(scroll, 230, 260);
+
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1);
+    char *ql = g_ascii_strdown(q, -1);
+    int matches = 0;
+
+    for (GList *l = g_tb.app_entries; l != NULL; l = l->next) {
+        DesktopAppEntry *e = (DesktopAppEntry *)l->data;
+        char *nl = g_ascii_strdown(e->name ? e->name : "", -1);
+        char *el = g_ascii_strdown(e->exec ? e->exec : "", -1);
+        if (strstr(nl, ql) != NULL || strstr(el, ql) != NULL) {
+            GtkWidget *row = make_flyout_row_ex(e->name, e->icon, e->exec, e->desktop_path, FALSE);
+            gtk_box_pack_start(GTK_BOX(vbox), row, FALSE, FALSE, 0);
+            matches++;
+        }
+        g_free(nl);
+        g_free(el);
+    }
+    g_free(ql);
+
+    if (matches == 0) {
+        GtkWidget *none = gtk_label_new("No matching programs");
+        gtk_box_pack_start(GTK_BOX(vbox), none, FALSE, FALSE, 6);
+    }
+
+    gtk_container_add(GTK_CONTAINER(scroll), vbox);
+    gtk_box_pack_start(GTK_BOX(g_tb.flyout_l1_box), scroll, TRUE, TRUE, 0);
+
+    if (gtk_layer_is_supported() && g_tb.active_popup_monitor) {
+        gtk_layer_set_monitor(GTK_WINDOW(g_tb.flyout_l1_win), g_tb.active_popup_monitor);
+        gtk_layer_set_margin(GTK_WINDOW(g_tb.flyout_l1_win), GTK_LAYER_SHELL_EDGE_LEFT, 214);
+        gtk_layer_set_margin(GTK_WINDOW(g_tb.flyout_l1_win), GTK_LAYER_SHELL_EDGE_BOTTOM, 140);
+    }
+    gtk_widget_show_all(g_tb.flyout_l1_win);
+}
+
+static void on_start_search_activate(GtkEntry *entry, gpointer data) {
+    (void)data;
+    const char *q = gtk_entry_get_text(entry);
+    if (!q || !*q) return;
+    char *ql = g_ascii_strdown(q, -1);
+    for (GList *l = g_tb.app_entries; l != NULL; l = l->next) {
+        DesktopAppEntry *e = (DesktopAppEntry *)l->data;
+        char *nl = g_ascii_strdown(e->name ? e->name : "", -1);
+        if (strstr(nl, ql) != NULL) {
+            g_free(nl);
+            g_free(ql);
+            hide_all_popups();
+            chicago_spawn_command(e->exec);
+            return;
+        }
+        g_free(nl);
+    }
+    g_free(ql);
 }
 
 /* Hovering "Documents ▸" in the main Start Menu cascades open Flyout Level 1 */
@@ -795,7 +919,18 @@ static void build_start_menu_and_flyouts(void) {
     gtk_box_pack_start(GTK_BOX(outer_hbox), banner, FALSE, FALSE, 0);
 
     GtkWidget *items_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1);
-    gtk_widget_set_size_request(items_vbox, 180, -1);
+    gtk_widget_set_size_request(items_vbox, 188, -1);
+
+    /* Quick Search Box inside Start Menu */
+    GtkWidget *search_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+    gtk_container_set_border_width(GTK_CONTAINER(search_box), 2);
+    g_tb.search_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(g_tb.search_entry), "Search programs...");
+    g_signal_connect(g_tb.search_entry, "changed", G_CALLBACK(on_start_search_changed), NULL);
+    g_signal_connect(g_tb.search_entry, "activate", G_CALLBACK(on_start_search_activate), NULL);
+    gtk_box_pack_start(GTK_BOX(search_box), g_tb.search_entry, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(items_vbox), search_box, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(items_vbox), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 2);
 
     GtkWidget *prog_btn = make_flyout_row("Programs", "folder", NULL, TRUE);
     g_signal_connect(prog_btn, "enter-notify-event", G_CALLBACK(on_hover_start_programs), NULL);
@@ -838,7 +973,7 @@ static void build_start_menu_and_flyouts(void) {
 
     gtk_box_pack_start(GTK_BOX(items_vbox), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 2);
 
-    GtkWidget *lock_btn = make_flyout_row("Lock Workstation", "system-lock-screen", "swaylock -f -c 008080", FALSE);
+    GtkWidget *lock_btn = make_flyout_row("Lock Workstation", "system-lock-screen", "chicago-lock", FALSE);
     g_signal_connect(lock_btn, "enter-notify-event", G_CALLBACK(on_hover_close_flyouts), NULL);
     gtk_box_pack_start(GTK_BOX(items_vbox), lock_btn, FALSE, FALSE, 0);
 
@@ -885,12 +1020,19 @@ static void set_start_menu_visible(gboolean visible, GdkMonitor *target_mon) {
     if (!g_tb.start_menu_win) return;
     if (visible) {
         hide_all_popups();
+        scan_desktop_applications();
         g_tb.start_menu_visible = TRUE;
         g_tb.active_popup_monitor = target_mon;
+        if (g_tb.search_entry) {
+            gtk_entry_set_text(GTK_ENTRY(g_tb.search_entry), "");
+        }
         if (gtk_layer_is_supported() && target_mon) {
             gtk_layer_set_monitor(GTK_WINDOW(g_tb.start_menu_win), target_mon);
         }
         gtk_widget_show_all(g_tb.start_menu_win);
+        if (g_tb.search_entry) {
+            gtk_widget_grab_focus(g_tb.search_entry);
+        }
         for (int i = 0; i < g_tb.bar_count; i++) {
             if (g_tb.bars[i].monitor == target_mon) {
                 gtk_style_context_add_class(gtk_widget_get_style_context(g_tb.bars[i].start_button), "win95-btn-active");
@@ -1349,6 +1491,66 @@ static gboolean on_sigusr2(gpointer data) {
     return G_SOURCE_CONTINUE;
 }
 
+static void populate_pins_for_bar(BarInstance *bi) {
+    if (!bi || !bi->pins_box) return;
+    clear_container(bi->pins_box);
+
+    /* Show Desktop button always first in Quick Launch */
+    GtkWidget *sd_btn = gtk_button_new();
+    gtk_style_context_add_class(gtk_widget_get_style_context(sd_btn), "quick-btn");
+    gtk_widget_set_tooltip_text(sd_btn, "Show Desktop (Super+D)");
+    GdkPixbuf *sdpb = chicago_load_icon("user-desktop", 16);
+    gtk_container_add(GTK_CONTAINER(sd_btn), gtk_image_new_from_pixbuf(sdpb));
+    if (sdpb) g_object_unref(sdpb);
+    g_signal_connect(sd_btn, "clicked", G_CALLBACK(on_quick_show_desktop), NULL);
+    gtk_box_pack_start(GTK_BOX(bi->pins_box), sd_btn, FALSE, FALSE, 0);
+
+    GList *pins = chicago_pins_load();
+    for (GList *l = pins; l != NULL; l = l->next) {
+        ChicagoPinEntry *p = (ChicagoPinEntry *)l->data;
+        GtkWidget *qbtn = gtk_button_new();
+        gtk_style_context_add_class(gtk_widget_get_style_context(qbtn), "quick-btn");
+        gtk_widget_add_events(qbtn, GDK_BUTTON_PRESS_MASK);
+        char tip[256];
+        snprintf(tip, sizeof(tip), "%s (Right-click for GPU / Unpin / Properties)", p->name ? p->name : "App");
+        gtk_widget_set_tooltip_text(qbtn, tip);
+
+        GdkPixbuf *qpb = chicago_load_icon(p->icon, 16);
+        gtk_container_add(GTK_CONTAINER(qbtn), gtk_image_new_from_pixbuf(qpb));
+        if (qpb) g_object_unref(qpb);
+
+        g_signal_connect_data(qbtn, "clicked", G_CALLBACK(on_launch_cmd_btn),
+                              g_strdup(p->exec), free_closure_str, 0);
+
+        AppRowCtx *rc = g_malloc0(sizeof(AppRowCtx));
+        rc->name = g_strdup(p->name ? p->name : "App");
+        rc->icon = g_strdup(p->icon ? p->icon : "application-x-executable");
+        rc->exec = g_strdup(p->exec ? p->exec : "");
+        rc->desktop_path = g_strdup(p->desktop_path ? p->desktop_path : "");
+        g_signal_connect_data(qbtn, "button-press-event", G_CALLBACK(on_app_row_button_press),
+                              rc, app_row_ctx_free, 0);
+
+        gtk_box_pack_start(GTK_BOX(bi->pins_box), qbtn, FALSE, FALSE, 0);
+    }
+    g_list_free_full(pins, chicago_pin_entry_free);
+    gtk_widget_show_all(bi->pins_box);
+}
+
+static void reload_all_taskbar_pins(void) {
+    for (int i = 0; i < g_tb.bar_count; i++) {
+        populate_pins_for_bar(&g_tb.bars[i]);
+    }
+}
+
+static void on_pins_file_changed(GFileMonitor *mon, GFile *file, GFile *other, GFileMonitorEvent ev, gpointer data) {
+    (void)mon; (void)file; (void)other; (void)data;
+    if (ev == G_FILE_MONITOR_EVENT_CHANGED ||
+        ev == G_FILE_MONITOR_EVENT_CREATED ||
+        ev == G_FILE_MONITOR_EVENT_CHANGES_DONE_HINT) {
+        reload_all_taskbar_pins();
+    }
+}
+
 static void create_taskbar_for_monitor(GdkMonitor *mon) {
     if (g_tb.bar_count >= MAX_BAR_MONITORS) return;
     BarInstance *bi = &g_tb.bars[g_tb.bar_count++];
@@ -1394,29 +1596,10 @@ static void create_taskbar_for_monitor(GdkMonitor *mon) {
     /* Divider */
     gtk_box_pack_start(GTK_BOX(root_hbox), gtk_separator_new(GTK_ORIENTATION_VERTICAL), FALSE, FALSE, 1);
 
-    /* 2. Quick Launch Bar (Show Desktop, Explorer, MS-DOS, Control Panel) */
-    struct { const char *icon; const char *tip; const char *cmd; gboolean is_show_desk; } ql[] = {
-        { "user-desktop",        "Show Desktop (Super+D)", NULL, TRUE },
-        { "system-file-manager", "Windows Explorer (Super+E)", "thunar", FALSE },
-        { "utilities-terminal",  "MS-DOS Prompt (Super+Enter)", "kitty -c ~/.config/chicago-wayland/kitty/kitty.conf --title 'MS-DOS Prompt'", FALSE },
-        { "preferences-system",  "Control Panel (Super+C)", "chicago-control-panel", FALSE },
-        { NULL, NULL, NULL, FALSE }
-    };
-    for (int q = 0; ql[q].icon != NULL; q++) {
-        GtkWidget *qbtn = gtk_button_new();
-        gtk_style_context_add_class(gtk_widget_get_style_context(qbtn), "quick-btn");
-        gtk_widget_set_tooltip_text(qbtn, ql[q].tip);
-        GdkPixbuf *qpb = chicago_load_icon(ql[q].icon, 16);
-        gtk_container_add(GTK_CONTAINER(qbtn), gtk_image_new_from_pixbuf(qpb));
-        if (qpb) g_object_unref(qpb);
-        if (ql[q].is_show_desk) {
-            g_signal_connect(qbtn, "clicked", G_CALLBACK(on_quick_show_desktop), NULL);
-        } else {
-            g_signal_connect_data(qbtn, "clicked", G_CALLBACK(on_launch_cmd_btn),
-                                  g_strdup(ql[q].cmd), free_closure_str, 0);
-        }
-        gtk_box_pack_start(GTK_BOX(root_hbox), qbtn, FALSE, FALSE, 0);
-    }
+    /* 2. Dynamic Pinned Quick Launch Bar */
+    bi->pins_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    populate_pins_for_bar(bi);
+    gtk_box_pack_start(GTK_BOX(root_hbox), bi->pins_box, FALSE, FALSE, 0);
 
     gtk_box_pack_start(GTK_BOX(root_hbox), gtk_separator_new(GTK_ORIENTATION_VERTICAL), FALSE, FALSE, 2);
 
@@ -1505,6 +1688,15 @@ int main(int argc, char **argv) {
             wl_display_roundtrip(g_tb.wl_display);
         }
     }
+
+    char pins_path[512];
+    snprintf(pins_path, sizeof(pins_path), "%s/.config/chicago-wayland/pins.conf", g_get_home_dir());
+    GFile *pf = g_file_new_for_path(pins_path);
+    g_tb.pins_monitor = g_file_monitor_file(pf, G_FILE_MONITOR_NONE, NULL, NULL);
+    if (g_tb.pins_monitor) {
+        g_signal_connect(g_tb.pins_monitor, "changed", G_CALLBACK(on_pins_file_changed), NULL);
+    }
+    g_object_unref(pf);
 
     g_unix_signal_add(SIGUSR1, on_sigusr1, NULL);
     g_unix_signal_add(SIGUSR2, on_sigusr2, NULL);

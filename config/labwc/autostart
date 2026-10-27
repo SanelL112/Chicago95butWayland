@@ -44,8 +44,8 @@ fi
 # 6. Idle & Screen Lock Management (only in full standalone session)
 if [ "${CHICAGO_NESTED:-0}" != "1" ] && command -v swayidle >/dev/null 2>&1; then
     swayidle -w \
-        timeout 600 'swaylock -f -c 008080' \
-        before-sleep 'swaylock -f -c 008080' >/dev/null 2>&1 &
+        timeout 600 'chicago-lock' \
+        before-sleep 'chicago-lock' >/dev/null 2>&1 &
 fi
 
 # 7. Optional Startup Sound (disabled by default for silent/low-power startup; enable via CHICAGO_STARTUP_SOUND=1)

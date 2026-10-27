@@ -13,7 +13,7 @@ PROTO_XML = protocols/wlr-foreign-toplevel-management-unstable-v1.xml
 PROTO_H = $(BUILDDIR)/wlr-foreign-toplevel-management-unstable-v1-client-protocol.h
 PROTO_C = $(BUILDDIR)/wlr-foreign-toplevel-management-unstable-v1-client-protocol.c
 
-TARGETS = $(BINDIR)/chicago-desktop $(BINDIR)/chicago-taskbar $(BINDIR)/chicago-control-panel
+TARGETS = $(BINDIR)/chicago-desktop $(BINDIR)/chicago-taskbar $(BINDIR)/chicago-control-panel $(BINDIR)/chicago-lock
 
 .PHONY: all clean
 
@@ -39,6 +39,9 @@ $(BINDIR)/chicago-taskbar: src/chicago_taskbar.c $(PROTO_H) $(PROTO_C) include/c
 
 $(BINDIR)/chicago-control-panel: src/chicago_control_panel.c include/chicago_common.h | $(BINDIR)
 	$(CC) $(ALL_CFLAGS) src/chicago_control_panel.c -o $@ $(LIBS)
+
+$(BINDIR)/chicago-lock: src/chicago_lock.c include/chicago_common.h | $(BINDIR)
+	$(CC) $(ALL_CFLAGS) src/chicago_lock.c -o $@ $(LIBS) -lpam
 
 clean:
 	rm -rf $(BUILDDIR) $(TARGETS)

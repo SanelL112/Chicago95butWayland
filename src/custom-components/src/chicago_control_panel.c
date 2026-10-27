@@ -1077,10 +1077,54 @@ static void on_switch_native_bar(GtkButton *btn, gpointer data) {
     chicago_spawn_command("pkill sfwbar; chicago-taskbar");
 }
 
+typedef struct {
+    GtkListStore *pin_store;
+    GtkWidget *pin_tree;
+} TaskbarPropState;
+
+static void refresh_taskbar_pins_store(TaskbarPropState *ts) {
+    if (!ts || !ts->pin_store) return;
+    gtk_list_store_clear(ts->pin_store);
+    GList *pins = chicago_pins_load();
+    for (GList *l = pins; l != NULL; l = l->next) {
+        ChicagoPinEntry *p = (ChicagoPinEntry *)l->data;
+        GtkTreeIter iter;
+        gtk_list_store_append(ts->pin_store, &iter);
+        gtk_list_store_set(ts->pin_store, &iter,
+                           0, p->name ? p->name : "App",
+                           1, p->exec ? p->exec : "",
+                           -1);
+    }
+    g_list_free_full(pins, chicago_pin_entry_free);
+}
+
+static void on_tb_unpin_clicked(GtkButton *btn, gpointer data) {
+    (void)btn;
+    TaskbarPropState *ts = (TaskbarPropState *)data;
+    GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(ts->pin_tree));
+    GtkTreeModel *model;
+    GtkTreeIter iter;
+    if (gtk_tree_selection_get_selected(sel, &model, &iter)) {
+        char *name = NULL, *exec = NULL;
+        gtk_tree_model_get(model, &iter, 0, &name, 1, &exec, -1);
+        chicago_pins_remove(name, exec);
+        g_free(name);
+        g_free(exec);
+        refresh_taskbar_pins_store(ts);
+    }
+}
+
+static void on_tb_add_pin_clicked(GtkButton *btn, gpointer data) {
+    (void)btn; (void)data;
+    chicago_spawn_command("chicago-control-panel --find");
+}
+
 static void show_taskbar_properties_dialog(gboolean standalone) {
+    TaskbarPropState *ts = g_malloc0(sizeof(TaskbarPropState));
+
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(win), "Taskbar Properties");
-    gtk_window_set_default_size(GTK_WINDOW(win), 360, 260);
+    gtk_window_set_default_size(GTK_WINDOW(win), 420, 340);
     gtk_window_set_position(GTK_WINDOW(win), GTK_WIN_POS_CENTER);
     gtk_style_context_add_class(gtk_widget_get_style_context(win), "win95-window");
     g_signal_connect(win, "destroy", G_CALLBACK(on_dialog_destroy), GINT_TO_POINTER(standalone));
@@ -1088,6 +1132,40 @@ static void show_taskbar_properties_dialog(gboolean standalone) {
     GtkWidget *root_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_container_set_border_width(GTK_CONTAINER(root_vbox), 8);
     GtkWidget *nb = gtk_notebook_new();
+
+    /* Tab 1: Pinned Taskbar Applications */
+    GtkWidget *pin_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_container_set_border_width(GTK_CONTAINER(pin_vbox), 8);
+
+    GtkWidget *info_lbl = gtk_label_new("Pinned applications appear on the Quick Launch bar across all monitors.\nRight-click any app in Start Menu or Find Programs to Pin/Unpin.");
+    gtk_label_set_xalign(GTK_LABEL(info_lbl), 0.0f);
+    gtk_box_pack_start(GTK_BOX(pin_vbox), info_lbl, FALSE, FALSE, 0);
+
+    ts->pin_store = gtk_list_store_new(2, G_TYPE_STRING, G_TYPE_STRING);
+    ts->pin_tree = gtk_tree_view_new_with_model(GTK_TREE_MODEL(ts->pin_store));
+    GtkCellRenderer *r = gtk_cell_renderer_text_new();
+    gtk_tree_view_append_column(GTK_TREE_VIEW(ts->pin_tree),
+        gtk_tree_view_column_new_with_attributes("Pinned Program", r, "text", 0, NULL));
+    gtk_tree_view_append_column(GTK_TREE_VIEW(ts->pin_tree),
+        gtk_tree_view_column_new_with_attributes("Command", r, "text", 1, NULL));
+
+    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_container_add(GTK_CONTAINER(scroll), ts->pin_tree);
+    gtk_box_pack_start(GTK_BOX(pin_vbox), scroll, TRUE, TRUE, 0);
+
+    GtkWidget *pbtn_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *unpin_btn = gtk_button_new_with_label("Unpin Selected");
+    GtkWidget *add_btn = gtk_button_new_with_label("Pin More Programs...");
+    g_signal_connect(unpin_btn, "clicked", G_CALLBACK(on_tb_unpin_clicked), ts);
+    g_signal_connect(add_btn, "clicked", G_CALLBACK(on_tb_add_pin_clicked), ts);
+    gtk_box_pack_start(GTK_BOX(pbtn_hbox), unpin_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(pbtn_hbox), add_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(pin_vbox), pbtn_hbox, FALSE, FALSE, 0);
+
+    refresh_taskbar_pins_store(ts);
+    gtk_notebook_append_page(GTK_NOTEBOOK(nb), pin_vbox, gtk_label_new("Pinned Programs"));
+
+    /* Tab 2: Taskbar Engine */
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     gtk_container_set_border_width(GTK_CONTAINER(vbox), 8);
 
@@ -1322,44 +1400,41 @@ typedef struct {
     GtkListStore *store;
     GtkWidget *entry;
     GtkWidget *tree;
+    GtkWidget *status_lbl;
 } FindDialogData;
 
 static void populate_find_results(FindDialogData *fd, const char *query) {
     gtk_list_store_clear(fd->store);
-    const char *dirs[] = { "/usr/share/applications", "/usr/local/share/applications", NULL };
+    GList *apps = chicago_scan_all_desktop_apps();
+    char *ql = g_ascii_strdown(query ? query : "", -1);
+    int count = 0;
 
-    for (int d = 0; dirs[d] != NULL; d++) {
-        GDir *dir = g_dir_open(dirs[d], 0, NULL);
-        if (!dir) continue;
-        const char *fname;
-        while ((fname = g_dir_read_name(dir)) != NULL) {
-            if (!g_str_has_suffix(fname, ".desktop")) continue;
-            char full[512];
-            snprintf(full, sizeof(full), "%s/%s", dirs[d], fname);
-            GKeyFile *kf = g_key_file_new();
-            if (g_key_file_load_from_file(kf, full, G_KEY_FILE_NONE, NULL)) {
-                char *name = g_key_file_get_locale_string(kf, "Desktop Entry", "Name", NULL, NULL);
-                char *exec = g_key_file_get_string(kf, "Desktop Entry", "Exec", NULL);
-                if (name && exec) {
-                    char *nl = g_ascii_strdown(name, -1);
-                    char *ql = g_ascii_strdown(query ? query : "", -1);
-                    if (!*ql || strstr(nl, ql) != NULL) {
-                        for (char *p = exec; *p; p++) {
-                            if (*p == '%' && *(p + 1) != '\0') { *p = '\0'; break; }
-                        }
-                        GtkTreeIter iter;
-                        gtk_list_store_append(fd->store, &iter);
-                        gtk_list_store_set(fd->store, &iter, 0, name, 1, exec, -1);
-                    }
-                    g_free(nl);
-                    g_free(ql);
-                }
-                g_free(name);
-                g_free(exec);
-            }
-            g_key_file_free(kf);
+    for (GList *l = apps; l != NULL; l = l->next) {
+        ChicagoAppEntry *e = (ChicagoAppEntry *)l->data;
+        char *nl = g_ascii_strdown(e->name ? e->name : "", -1);
+        char *el = g_ascii_strdown(e->exec ? e->exec : "", -1);
+        if (!*ql || strstr(nl, ql) != NULL || strstr(el, ql) != NULL) {
+            GtkTreeIter iter;
+            gtk_list_store_append(fd->store, &iter);
+            gtk_list_store_set(fd->store, &iter,
+                               0, e->name ? e->name : "App",
+                               1, e->category ? e->category : "Accessories",
+                               2, e->exec ? e->exec : "",
+                               3, e->icon ? e->icon : "application-x-executable",
+                               4, e->desktop_path ? e->desktop_path : "",
+                               -1);
+            count++;
         }
-        g_dir_close(dir);
+        g_free(nl);
+        g_free(el);
+    }
+    g_free(ql);
+    g_list_free_full(apps, chicago_app_entry_free);
+
+    if (fd->status_lbl) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "%d program(s) found. Right-click any program for GPU / Pin / Desktop Shortcut options.", count);
+        gtk_label_set_text(GTK_LABEL(fd->status_lbl), msg);
     }
 }
 
@@ -1374,7 +1449,7 @@ static void on_find_row_activated(GtkTreeView *tv, GtkTreePath *path, GtkTreeVie
     GtkTreeIter iter;
     if (gtk_tree_model_get_iter(model, &iter, path)) {
         char *cmd = NULL;
-        gtk_tree_model_get(model, &iter, 1, &cmd, -1);
+        gtk_tree_model_get(model, &iter, 2, &cmd, -1);
         if (cmd) {
             chicago_spawn_command(cmd);
             g_free(cmd);
@@ -1382,36 +1457,136 @@ static void on_find_row_activated(GtkTreeView *tv, GtkTreePath *path, GtkTreeVie
     }
 }
 
+static gboolean on_find_tree_button_press(GtkWidget *tv, GdkEventButton *event, gpointer data) {
+    (void)data;
+    if (event->type == GDK_BUTTON_PRESS && event->button == 3) {
+        GtkTreePath *path = NULL;
+        if (gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(tv), (gint)event->x, (gint)event->y, &path, NULL, NULL, NULL)) {
+            GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(tv));
+            gtk_tree_selection_select_path(sel, path);
+            GtkTreeModel *model = gtk_tree_view_get_model(GTK_TREE_VIEW(tv));
+            GtkTreeIter iter;
+            if (gtk_tree_model_get_iter(model, &iter, path)) {
+                char *name = NULL, *exec = NULL, *icon = NULL, *dpath = NULL;
+                gtk_tree_model_get(model, &iter, 0, &name, 2, &exec, 3, &icon, 4, &dpath, -1);
+                chicago_popup_app_context_menu(name, icon, exec, dpath, event);
+                g_free(name);
+                g_free(exec);
+                g_free(icon);
+                g_free(dpath);
+            }
+            gtk_tree_path_free(path);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static void on_find_btn_launch(GtkButton *btn, gpointer data) {
+    (void)btn;
+    FindDialogData *fd = (FindDialogData *)data;
+    GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(fd->tree));
+    GtkTreeModel *model;
+    GtkTreeIter iter;
+    if (gtk_tree_selection_get_selected(sel, &model, &iter)) {
+        char *cmd = NULL;
+        gtk_tree_model_get(model, &iter, 2, &cmd, -1);
+        if (cmd) {
+            chicago_spawn_command(cmd);
+            g_free(cmd);
+        }
+    }
+}
+
+static void on_find_btn_dgpu(GtkButton *btn, gpointer data) {
+    (void)btn;
+    FindDialogData *fd = (FindDialogData *)data;
+    GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(fd->tree));
+    GtkTreeModel *model;
+    GtkTreeIter iter;
+    if (gtk_tree_selection_get_selected(sel, &model, &iter)) {
+        char *cmd = NULL;
+        gtk_tree_model_get(model, &iter, 2, &cmd, -1);
+        if (cmd) {
+            chicago_launch_with_dgpu(cmd);
+            g_free(cmd);
+        }
+    }
+}
+
+static void on_find_btn_pin(GtkButton *btn, gpointer data) {
+    (void)btn;
+    FindDialogData *fd = (FindDialogData *)data;
+    GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(fd->tree));
+    GtkTreeModel *model;
+    GtkTreeIter iter;
+    if (gtk_tree_selection_get_selected(sel, &model, &iter)) {
+        char *name = NULL, *exec = NULL, *icon = NULL, *dpath = NULL;
+        gtk_tree_model_get(model, &iter, 0, &name, 2, &exec, 3, &icon, 4, &dpath, -1);
+        if (chicago_pins_is_pinned(name, exec)) {
+            chicago_pins_remove(name, exec);
+            if (fd->status_lbl) gtk_label_set_text(GTK_LABEL(fd->status_lbl), "Unpinned program from Taskbar.");
+        } else {
+            chicago_pins_add(name, icon, exec, dpath);
+            if (fd->status_lbl) gtk_label_set_text(GTK_LABEL(fd->status_lbl), "Pinned program to Taskbar!");
+        }
+        g_free(name);
+        g_free(exec);
+        g_free(icon);
+        g_free(dpath);
+    }
+}
+
 static void build_find_dialog(gboolean standalone) {
     FindDialogData *fd = g_malloc0(sizeof(FindDialogData));
 
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(win), "Find: All Programs & Applications");
-    gtk_window_set_default_size(GTK_WINDOW(win), 460, 360);
+    gtk_window_set_title(GTK_WINDOW(win), "Find: All Programs & Applications (XDG + Flatpak)");
+    gtk_window_set_default_size(GTK_WINDOW(win), 560, 400);
     gtk_window_set_position(GTK_WINDOW(win), GTK_WIN_POS_CENTER);
     gtk_style_context_add_class(gtk_widget_get_style_context(win), "win95-window");
     g_signal_connect(win, "destroy", G_CALLBACK(on_dialog_destroy), GINT_TO_POINTER(standalone));
 
-    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    gtk_container_set_border_width(GTK_CONTAINER(vbox), 10);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_container_set_border_width(GTK_CONTAINER(vbox), 8);
 
     GtkWidget *search_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_box_pack_start(GTK_BOX(search_hbox), gtk_label_new("Named:"), FALSE, FALSE, 0);
     fd->entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(fd->entry), "Type app name (e.g. Spotify, Signal, Vesktop, Thunar)...");
     g_signal_connect(fd->entry, "changed", G_CALLBACK(on_find_changed), fd);
     gtk_box_pack_start(GTK_BOX(search_hbox), fd->entry, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), search_hbox, FALSE, FALSE, 0);
 
-    fd->store = gtk_list_store_new(2, G_TYPE_STRING, G_TYPE_STRING);
+    fd->store = gtk_list_store_new(5, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING);
     fd->tree = gtk_tree_view_new_with_model(GTK_TREE_MODEL(fd->store));
     GtkCellRenderer *r = gtk_cell_renderer_text_new();
     gtk_tree_view_append_column(GTK_TREE_VIEW(fd->tree), gtk_tree_view_column_new_with_attributes("Program Name", r, "text", 0, NULL));
-    gtk_tree_view_append_column(GTK_TREE_VIEW(fd->tree), gtk_tree_view_column_new_with_attributes("Command", r, "text", 1, NULL));
+    gtk_tree_view_append_column(GTK_TREE_VIEW(fd->tree), gtk_tree_view_column_new_with_attributes("Category", r, "text", 1, NULL));
+    gtk_tree_view_append_column(GTK_TREE_VIEW(fd->tree), gtk_tree_view_column_new_with_attributes("Command", r, "text", 2, NULL));
     g_signal_connect(fd->tree, "row-activated", G_CALLBACK(on_find_row_activated), fd);
+    g_signal_connect(fd->tree, "button-press-event", G_CALLBACK(on_find_tree_button_press), fd);
 
     GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
     gtk_container_add(GTK_CONTAINER(scroll), fd->tree);
     gtk_box_pack_start(GTK_BOX(vbox), scroll, TRUE, TRUE, 0);
+
+    GtkWidget *act_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *b_open = gtk_button_new_with_label("Open / Launch");
+    GtkWidget *b_gpu = gtk_button_new_with_label("Run on Dedicated GPU (NVIDIA)");
+    GtkWidget *b_pin = gtk_button_new_with_label("Pin / Unpin to Taskbar");
+    g_signal_connect(b_open, "clicked", G_CALLBACK(on_find_btn_launch), fd);
+    g_signal_connect(b_gpu, "clicked", G_CALLBACK(on_find_btn_dgpu), fd);
+    g_signal_connect(b_pin, "clicked", G_CALLBACK(on_find_btn_pin), fd);
+    gtk_box_pack_start(GTK_BOX(act_hbox), b_open, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(act_hbox), b_gpu, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(act_hbox), b_pin, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), act_hbox, FALSE, FALSE, 0);
+
+    fd->status_lbl = gtk_label_new("");
+    gtk_label_set_xalign(GTK_LABEL(fd->status_lbl), 0.0f);
+    gtk_style_context_add_class(gtk_widget_get_style_context(fd->status_lbl), "win95-well");
+    gtk_box_pack_start(GTK_BOX(vbox), fd->status_lbl, FALSE, FALSE, 0);
 
     populate_find_results(fd, "");
     gtk_container_add(GTK_CONTAINER(win), vbox);
