@@ -3,6 +3,8 @@
 
 #include <gtk/gtk.h>
 #include <gdk/gdk.h>
+#include <gdk/gdkkeysyms.h>
+#include <gtk-layer-shell/gtk-layer-shell.h>
 #include <cairo.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1014,26 +1016,243 @@ static inline void chicago_show_app_properties_dialog(const char *name, const ch
     gtk_widget_show_all(win);
 }
 
-static inline void on_ctx_app_open(GtkMenuItem *mi, gpointer data) {
-    (void)mi;
+/* =========================================================================
+ * Native Wayland gtk-layer-shell OVERLAY Windows 95 Context Menu System
+ * ========================================================================= */
+
+static GtkWidget *g_chicago_ctx_win = NULL;
+
+static inline void chicago_close_context_menu(void) {
+    if (g_chicago_ctx_win) {
+        GtkWidget *w = g_chicago_ctx_win;
+        g_chicago_ctx_win = NULL;
+        gtk_widget_destroy(w);
+    }
+}
+
+static inline gboolean chicago_is_context_menu_visible(void) {
+    return (g_chicago_ctx_win != NULL && gtk_widget_get_visible(g_chicago_ctx_win));
+}
+
+static inline void on_chicago_ctx_win_destroyed(GtkWidget *win, gpointer data) {
+    (void)data;
+    if (g_chicago_ctx_win == win) {
+        g_chicago_ctx_win = NULL;
+    }
+}
+
+static inline gboolean on_chicago_ctx_win_key_press(GtkWidget *win, GdkEventKey *ev, gpointer data) {
+    (void)win; (void)data;
+    if (ev->keyval == GDK_KEY_Escape) {
+        chicago_close_context_menu();
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static inline gboolean on_chicago_ctx_win_focus_in(GtkWidget *win, GdkEventFocus *ev, gpointer data) {
+    (void)ev; (void)data;
+    g_object_set_data(G_OBJECT(win), "ctx-had-focus", GINT_TO_POINTER(1));
+    if (gtk_layer_is_supported() && gtk_layer_is_layer_window(GTK_WINDOW(win))) {
+        gtk_layer_set_keyboard_mode(GTK_WINDOW(win), GTK_LAYER_SHELL_KEYBOARD_MODE_ON_DEMAND);
+    }
+    return FALSE;
+}
+
+static inline gboolean on_chicago_ctx_win_focus_out(GtkWidget *win, GdkEventFocus *ev, gpointer data) {
+    (void)ev; (void)data;
+    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(win), "ctx-had-focus")) == 1) {
+        chicago_close_context_menu();
+    }
+    return FALSE;
+}
+
+static inline void on_chicago_ctx_item_close_after(GtkWidget *btn, gpointer menu_win) {
+    (void)btn;
+    if (g_chicago_ctx_win && g_chicago_ctx_win == (GtkWidget *)menu_win) {
+        chicago_close_context_menu();
+    }
+}
+
+static inline GtkWidget *chicago_ctx_menu_begin(GdkMonitor *mon, int left_margin, int edge_margin, gboolean anchor_bottom, GtkWidget **out_vbox) {
+    chicago_close_context_menu();
+
+    GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    g_chicago_ctx_win = win;
+    gtk_window_set_title(GTK_WINDOW(win), "Context Menu");
+    gtk_window_set_decorated(GTK_WINDOW(win), FALSE);
+    gtk_window_set_resizable(GTK_WINDOW(win), FALSE);
+    gtk_style_context_add_class(gtk_widget_get_style_context(win), "win95-outset");
+    gtk_style_context_add_class(gtk_widget_get_style_context(win), "win95-menu");
+
+    if (gtk_layer_is_supported()) {
+        gtk_layer_init_for_window(GTK_WINDOW(win));
+        gtk_layer_set_layer(GTK_WINDOW(win), GTK_LAYER_SHELL_LAYER_OVERLAY);
+        if (mon) {
+            gtk_layer_set_monitor(GTK_WINDOW(win), mon);
+            g_object_set_data(G_OBJECT(win), "chicago-monitor", mon);
+        }
+        gtk_layer_set_anchor(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_LEFT, TRUE);
+        if (anchor_bottom) {
+            gtk_layer_set_anchor(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_BOTTOM, TRUE);
+            gtk_layer_set_margin(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_BOTTOM, MAX(2, edge_margin));
+        } else {
+            gtk_layer_set_anchor(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_TOP, TRUE);
+            gtk_layer_set_margin(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_TOP, MAX(2, edge_margin));
+        }
+        gtk_layer_set_margin(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_LEFT, MAX(2, left_margin));
+        gtk_layer_set_keyboard_mode(GTK_WINDOW(win), GTK_LAYER_SHELL_KEYBOARD_MODE_EXCLUSIVE);
+        gtk_layer_set_namespace(GTK_WINDOW(win), "chicago-context-menu");
+    }
+
+    gtk_widget_add_events(win, GDK_KEY_PRESS_MASK | GDK_FOCUS_CHANGE_MASK);
+    g_signal_connect(win, "destroy", G_CALLBACK(on_chicago_ctx_win_destroyed), NULL);
+    g_signal_connect(win, "key-press-event", G_CALLBACK(on_chicago_ctx_win_key_press), NULL);
+    g_signal_connect(win, "focus-in-event", G_CALLBACK(on_chicago_ctx_win_focus_in), NULL);
+    g_signal_connect(win, "focus-out-event", G_CALLBACK(on_chicago_ctx_win_focus_out), NULL);
+
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1);
+    gtk_container_set_border_width(GTK_CONTAINER(vbox), 3);
+    gtk_widget_set_size_request(vbox, 215, -1);
+    gtk_container_add(GTK_CONTAINER(win), vbox);
+
+    if (out_vbox) *out_vbox = vbox;
+    return win;
+}
+
+static inline GtkWidget *chicago_ctx_menu_add_item(GtkWidget *vbox, const char *label_text, const char *icon_name,
+                                                   gboolean bold, GCallback cb, gpointer user_data) {
+    GtkWidget *btn = gtk_button_new();
+    gtk_style_context_add_class(gtk_widget_get_style_context(btn), "win95-menuitem");
+
+    GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    if (icon_name && *icon_name) {
+        GdkPixbuf *pb = chicago_load_icon(icon_name, 16);
+        GtkWidget *img = gtk_image_new_from_pixbuf(pb);
+        if (pb) g_object_unref(pb);
+        gtk_box_pack_start(GTK_BOX(hbox), img, FALSE, FALSE, 2);
+    }
+
+    GtkWidget *lbl = gtk_label_new(NULL);
+    if (bold) {
+        char *mk = g_markup_printf_escaped("<b>%s</b>", label_text ? label_text : "");
+        gtk_label_set_markup(GTK_LABEL(lbl), mk);
+        g_free(mk);
+    } else {
+        gtk_label_set_text(GTK_LABEL(lbl), label_text ? label_text : "");
+    }
+    gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
+    gtk_box_pack_start(GTK_BOX(hbox), lbl, TRUE, TRUE, 2);
+
+    gtk_container_add(GTK_CONTAINER(btn), hbox);
+    if (cb) {
+        g_signal_connect(btn, "clicked", cb, user_data);
+    }
+    g_signal_connect_after(btn, "clicked", G_CALLBACK(on_chicago_ctx_item_close_after), g_chicago_ctx_win);
+    gtk_box_pack_start(GTK_BOX(vbox), btn, FALSE, FALSE, 0);
+    return btn;
+}
+
+static inline void chicago_ctx_menu_add_separator(GtkWidget *vbox) {
+    gtk_box_pack_start(GTK_BOX(vbox), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 2);
+}
+
+static inline void chicago_ctx_menu_show(GtkWidget *win, GdkMonitor *mon, int req_left, int req_edge, gboolean anchor_bottom) {
+    if (!win) return;
+    gtk_widget_show_all(win);
+
+    if (gtk_layer_is_supported() && gtk_layer_is_layer_window(GTK_WINDOW(win))) {
+        GtkRequisition min_req = {0, 0}, nat_req = {220, 200};
+        gtk_widget_get_preferred_size(win, &min_req, &nat_req);
+        int menu_w = MAX(nat_req.width, 215);
+        int menu_h = MAX(nat_req.height, 120);
+
+        GdkRectangle geom = {0, 0, 1920, 1080};
+        if (mon) {
+            gdk_monitor_get_geometry(mon, &geom);
+        }
+        int clamped_left = CLAMP(req_left, 4, MAX(4, geom.width - menu_w - 6));
+        int clamped_edge = CLAMP(req_edge, 4, MAX(4, geom.height - menu_h - 32));
+
+        gtk_layer_set_margin(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_LEFT, clamped_left);
+        if (anchor_bottom) {
+            gtk_layer_set_margin(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_BOTTOM, clamped_edge);
+        } else {
+            gtk_layer_set_margin(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_TOP, clamped_edge);
+        }
+    }
+}
+
+static inline void chicago_resolve_event_layer_coords(GtkWidget *widget, GdkEventButton *event,
+                                                      GdkMonitor **out_mon, int *out_left, int *out_edge, gboolean *out_anchor_bottom) {
+    GtkWidget *toplevel = widget ? gtk_widget_get_toplevel(widget) : NULL;
+    GdkMonitor *mon = NULL;
+    if (toplevel) {
+        mon = (GdkMonitor *)g_object_get_data(G_OBJECT(toplevel), "chicago-monitor");
+    }
+    GdkDisplay *dpy = gdk_display_get_default();
+    if (!mon && dpy && event && event->window) {
+        mon = gdk_display_get_monitor_at_window(dpy, event->window);
+    }
+    if (!mon && dpy && gdk_display_get_n_monitors(dpy) > 0) {
+        mon = gdk_display_get_monitor(dpy, 0);
+    }
+
+    int wx = event ? (int)event->x : 100;
+    int wy = event ? (int)event->y : 100;
+    if (widget && toplevel && widget != toplevel && gtk_widget_is_toplevel(toplevel)) {
+        gtk_widget_translate_coordinates(widget, toplevel, wx, wy, &wx, &wy);
+    }
+
+    gboolean anchor_bottom = FALSE;
+    int left = wx;
+    int edge = wy;
+
+    if (toplevel && gtk_layer_is_supported() && gtk_layer_is_layer_window(GTK_WINDOW(toplevel))) {
+        gboolean is_bottom = gtk_layer_get_anchor(GTK_WINDOW(toplevel), GTK_LAYER_SHELL_EDGE_BOTTOM);
+        gboolean is_top = gtk_layer_get_anchor(GTK_WINDOW(toplevel), GTK_LAYER_SHELL_EDGE_TOP);
+        if (is_bottom && !is_top) {
+            anchor_bottom = TRUE;
+            int m_left = gtk_layer_get_margin(GTK_WINDOW(toplevel), GTK_LAYER_SHELL_EDGE_LEFT);
+            int m_bot = gtk_layer_get_margin(GTK_WINDOW(toplevel), GTK_LAYER_SHELL_EDGE_BOTTOM);
+            int top_h = gtk_widget_get_allocated_height(toplevel);
+            left = m_left + wx;
+            if (m_bot == 0) {
+                /* 28px bottom taskbar */
+                edge = 28;
+            } else {
+                /* Start menu or flyout surface */
+                edge = MAX(28, m_bot + MAX(0, top_h - wy - 160));
+            }
+        }
+    }
+
+    if (out_mon) *out_mon = mon;
+    if (out_left) *out_left = left;
+    if (out_edge) *out_edge = edge;
+    if (out_anchor_bottom) *out_anchor_bottom = anchor_bottom;
+}
+
+static inline void on_ctx_app_open(GtkWidget *btn, gpointer data) {
+    (void)btn;
     ChicagoAppMenuCtx *ctx = (ChicagoAppMenuCtx *)data;
     chicago_spawn_command(ctx->exec);
 }
 
-static inline void on_ctx_app_dgpu(GtkMenuItem *mi, gpointer data) {
-    (void)mi;
+static inline void on_ctx_app_dgpu(GtkWidget *btn, gpointer data) {
+    (void)btn;
     ChicagoAppMenuCtx *ctx = (ChicagoAppMenuCtx *)data;
     chicago_launch_with_dgpu(ctx->exec);
 }
 
-static inline void on_ctx_app_admin(GtkMenuItem *mi, gpointer data) {
-    (void)mi;
+static inline void on_ctx_app_admin(GtkWidget *btn, gpointer data) {
+    (void)btn;
     ChicagoAppMenuCtx *ctx = (ChicagoAppMenuCtx *)data;
     chicago_launch_as_admin(ctx->exec);
 }
 
-static inline void on_ctx_app_toggle_pin(GtkMenuItem *mi, gpointer data) {
-    (void)mi;
+static inline void on_ctx_app_toggle_pin(GtkWidget *btn, gpointer data) {
+    (void)btn;
     ChicagoAppMenuCtx *ctx = (ChicagoAppMenuCtx *)data;
     if (chicago_pins_is_pinned(ctx->name, ctx->exec)) {
         chicago_pins_remove(ctx->name, ctx->exec);
@@ -1042,20 +1261,20 @@ static inline void on_ctx_app_toggle_pin(GtkMenuItem *mi, gpointer data) {
     }
 }
 
-static inline void on_ctx_app_desktop_shortcut(GtkMenuItem *mi, gpointer data) {
-    (void)mi;
+static inline void on_ctx_app_desktop_shortcut(GtkWidget *btn, gpointer data) {
+    (void)btn;
     ChicagoAppMenuCtx *ctx = (ChicagoAppMenuCtx *)data;
     chicago_create_desktop_shortcut(ctx->name, ctx->icon, ctx->exec, FALSE);
 }
 
-static inline void on_ctx_app_desktop_shortcut_dgpu(GtkMenuItem *mi, gpointer data) {
-    (void)mi;
+static inline void on_ctx_app_desktop_shortcut_dgpu(GtkWidget *btn, gpointer data) {
+    (void)btn;
     ChicagoAppMenuCtx *ctx = (ChicagoAppMenuCtx *)data;
     chicago_create_desktop_shortcut(ctx->name, ctx->icon, ctx->exec, TRUE);
 }
 
-static inline void on_ctx_app_open_location(GtkMenuItem *mi, gpointer data) {
-    (void)mi;
+static inline void on_ctx_app_open_location(GtkWidget *btn, gpointer data) {
+    (void)btn;
     ChicagoAppMenuCtx *ctx = (ChicagoAppMenuCtx *)data;
     if (ctx->desktop_path && *ctx->desktop_path) {
         char *dir = g_path_get_dirname(ctx->desktop_path);
@@ -1068,61 +1287,50 @@ static inline void on_ctx_app_open_location(GtkMenuItem *mi, gpointer data) {
     }
 }
 
-static inline void on_ctx_app_properties(GtkMenuItem *mi, gpointer data) {
-    (void)mi;
+static inline void on_ctx_app_properties(GtkWidget *btn, gpointer data) {
+    (void)btn;
     ChicagoAppMenuCtx *ctx = (ChicagoAppMenuCtx *)data;
     chicago_show_app_properties_dialog(ctx->name, ctx->icon, ctx->exec, ctx->desktop_path);
 }
 
-static inline void chicago_popup_app_context_menu(const char *name, const char *icon, const char *exec, const char *desktop_path, GdkEventButton *event) {
+static inline void chicago_popup_app_context_menu_for_widget(GtkWidget *widget, const char *name, const char *icon, const char *exec, const char *desktop_path, GdkEventButton *event) {
     ChicagoAppMenuCtx *ctx = g_malloc0(sizeof(ChicagoAppMenuCtx));
     ctx->name = g_strdup(name ? name : "Application");
     ctx->icon = g_strdup(icon ? icon : "application-x-executable");
     ctx->exec = g_strdup(exec ? exec : "");
     ctx->desktop_path = g_strdup(desktop_path ? desktop_path : "");
 
-    GtkWidget *menu = gtk_menu_new();
-    g_object_set_data_full(G_OBJECT(menu), "app-ctx", ctx, (GDestroyNotify)chicago_app_menu_ctx_free);
+    GdkMonitor *mon = NULL;
+    int left = 100, edge = 100;
+    gboolean anchor_bottom = FALSE;
+    chicago_resolve_event_layer_coords(widget, event, &mon, &left, &edge, &anchor_bottom);
 
-    GtkWidget *mi_open = gtk_menu_item_new_with_label("Open");
-    g_signal_connect(mi_open, "activate", G_CALLBACK(on_ctx_app_open), ctx);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_open);
+    GtkWidget *vbox = NULL;
+    GtkWidget *win = chicago_ctx_menu_begin(mon, left, edge, anchor_bottom, &vbox);
+    g_object_set_data_full(G_OBJECT(win), "app-ctx", ctx, (GDestroyNotify)chicago_app_menu_ctx_free);
 
-    GtkWidget *mi_dgpu = gtk_menu_item_new_with_label("Run with Dedicated GPU (NVIDIA Quadro T1000)");
-    g_signal_connect(mi_dgpu, "activate", G_CALLBACK(on_ctx_app_dgpu), ctx);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_dgpu);
+    chicago_ctx_menu_add_item(vbox, "Open", ctx->icon, TRUE, G_CALLBACK(on_ctx_app_open), ctx);
+    chicago_ctx_menu_add_item(vbox, "Run with Dedicated GPU (NVIDIA Quadro T1000)", "preferences-desktop-display", FALSE, G_CALLBACK(on_ctx_app_dgpu), ctx);
+    chicago_ctx_menu_add_item(vbox, "Run as Administrator...", "dialog-password", FALSE, G_CALLBACK(on_ctx_app_admin), ctx);
 
-    GtkWidget *mi_admin = gtk_menu_item_new_with_label("Run as Administrator...");
-    g_signal_connect(mi_admin, "activate", G_CALLBACK(on_ctx_app_admin), ctx);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_admin);
-
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+    chicago_ctx_menu_add_separator(vbox);
 
     gboolean is_pinned = chicago_pins_is_pinned(ctx->name, ctx->exec);
-    GtkWidget *mi_pin = gtk_menu_item_new_with_label(is_pinned ? "Unpin from Taskbar" : "Pin to Taskbar");
-    g_signal_connect(mi_pin, "activate", G_CALLBACK(on_ctx_app_toggle_pin), ctx);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_pin);
+    chicago_ctx_menu_add_item(vbox, is_pinned ? "Unpin from Taskbar" : "Pin to Taskbar",
+                              "preferences-desktop", FALSE, G_CALLBACK(on_ctx_app_toggle_pin), ctx);
+    chicago_ctx_menu_add_item(vbox, "Create Shortcut on Desktop", "user-desktop", FALSE, G_CALLBACK(on_ctx_app_desktop_shortcut), ctx);
+    chicago_ctx_menu_add_item(vbox, "Create Desktop Shortcut (Dedicated GPU)", "preferences-desktop-display", FALSE, G_CALLBACK(on_ctx_app_desktop_shortcut_dgpu), ctx);
+    chicago_ctx_menu_add_item(vbox, "Open File Location", "folder", FALSE, G_CALLBACK(on_ctx_app_open_location), ctx);
 
-    GtkWidget *mi_desk = gtk_menu_item_new_with_label("Create Shortcut on Desktop");
-    g_signal_connect(mi_desk, "activate", G_CALLBACK(on_ctx_app_desktop_shortcut), ctx);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_desk);
+    chicago_ctx_menu_add_separator(vbox);
 
-    GtkWidget *mi_desk_gpu = gtk_menu_item_new_with_label("Create Desktop Shortcut (Dedicated GPU)");
-    g_signal_connect(mi_desk_gpu, "activate", G_CALLBACK(on_ctx_app_desktop_shortcut_dgpu), ctx);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_desk_gpu);
+    chicago_ctx_menu_add_item(vbox, "Properties", "document-properties", FALSE, G_CALLBACK(on_ctx_app_properties), ctx);
 
-    GtkWidget *mi_loc = gtk_menu_item_new_with_label("Open File Location");
-    g_signal_connect(mi_loc, "activate", G_CALLBACK(on_ctx_app_open_location), ctx);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_loc);
+    chicago_ctx_menu_show(win, mon, left, edge, anchor_bottom);
+}
 
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
-
-    GtkWidget *mi_prop = gtk_menu_item_new_with_label("Properties");
-    g_signal_connect(mi_prop, "activate", G_CALLBACK(on_ctx_app_properties), ctx);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_prop);
-
-    gtk_widget_show_all(menu);
-    gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)event);
+static inline void chicago_popup_app_context_menu(const char *name, const char *icon, const char *exec, const char *desktop_path, GdkEventButton *event) {
+    chicago_popup_app_context_menu_for_widget(NULL, name, icon, exec, desktop_path, event);
 }
 
 #endif /* CHICAGO_COMMON_H */

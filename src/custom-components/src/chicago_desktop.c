@@ -378,16 +378,16 @@ static gboolean on_draw_desktop(GtkWidget *widget, cairo_t *cr, gpointer data) {
     return FALSE;
 }
 
-static void on_ctx_open_item(GtkMenuItem *item, gpointer data) {
-    (void)item;
+static void on_ctx_open_item(GtkWidget *btn, gpointer data) {
+    (void)btn;
     int idx = GPOINTER_TO_INT(data);
     if (idx >= 0 && idx < g_app.icon_count) {
         chicago_spawn_command(g_app.icons[idx].command);
     }
 }
 
-static void on_ctx_empty_trash(GtkMenuItem *item, gpointer data) {
-    (void)item;
+static void on_ctx_empty_trash(GtkWidget *btn, gpointer data) {
+    (void)btn;
     (void)data;
     char cmd[512];
     snprintf(cmd, sizeof(cmd),
@@ -396,8 +396,8 @@ static void on_ctx_empty_trash(GtkMenuItem *item, gpointer data) {
     chicago_spawn_command(cmd);
 }
 
-static void on_ctx_new_folder(GtkMenuItem *item, gpointer data) {
-    (void)item;
+static void on_ctx_new_folder(GtkWidget *btn, gpointer data) {
+    (void)btn;
     (void)data;
     char path[512];
     for (int n = 1; n < 100; n++) {
@@ -413,8 +413,8 @@ static void on_ctx_new_folder(GtkMenuItem *item, gpointer data) {
     populate_icons();
 }
 
-static void on_ctx_new_text_file(GtkMenuItem *item, gpointer data) {
-    (void)item;
+static void on_ctx_new_text_file(GtkWidget *btn, gpointer data) {
+    (void)btn;
     (void)data;
     char path[512];
     for (int n = 1; n < 100; n++) {
@@ -430,8 +430,8 @@ static void on_ctx_new_text_file(GtkMenuItem *item, gpointer data) {
     populate_icons();
 }
 
-static void on_ctx_line_up_icons(GtkMenuItem *item, gpointer data) {
-    (void)item;
+static void on_ctx_line_up_icons(GtkWidget *btn, gpointer data) {
+    (void)btn;
     (void)data;
     for (int i = 0; i < g_app.icon_count; i++) {
         int col = i / 7;
@@ -442,37 +442,37 @@ static void on_ctx_line_up_icons(GtkMenuItem *item, gpointer data) {
     queue_redraw_all();
 }
 
-static void on_ctx_refresh(GtkMenuItem *item, gpointer data) {
-    (void)item;
+static void on_ctx_refresh(GtkWidget *btn, gpointer data) {
+    (void)btn;
     (void)data;
     load_desktop_Appearance_config();
     populate_icons();
 }
 
-static void on_ctx_run_cmd(GtkMenuItem *item, gpointer data) {
-    (void)item;
+static void on_ctx_run_cmd(GtkWidget *btn, gpointer data) {
+    (void)btn;
     const char *cmd = (const char *)data;
     chicago_spawn_command(cmd);
 }
 
-static void on_ctx_open_item_dgpu(GtkMenuItem *item, gpointer data) {
-    (void)item;
+static void on_ctx_open_item_dgpu(GtkWidget *btn, gpointer data) {
+    (void)btn;
     int idx = GPOINTER_TO_INT(data);
     if (idx >= 0 && idx < g_app.icon_count) {
         chicago_launch_with_dgpu(g_app.icons[idx].command);
     }
 }
 
-static void on_ctx_open_item_admin(GtkMenuItem *item, gpointer data) {
-    (void)item;
+static void on_ctx_open_item_admin(GtkWidget *btn, gpointer data) {
+    (void)btn;
     int idx = GPOINTER_TO_INT(data);
     if (idx >= 0 && idx < g_app.icon_count) {
         chicago_launch_as_admin(g_app.icons[idx].command);
     }
 }
 
-static void on_ctx_toggle_pin_item(GtkMenuItem *item, gpointer data) {
-    (void)item;
+static void on_ctx_toggle_pin_item(GtkWidget *btn, gpointer data) {
+    (void)btn;
     int idx = GPOINTER_TO_INT(data);
     if (idx >= 0 && idx < g_app.icon_count) {
         DesktopIcon *ic = &g_app.icons[idx];
@@ -484,8 +484,8 @@ static void on_ctx_toggle_pin_item(GtkMenuItem *item, gpointer data) {
     }
 }
 
-static void on_ctx_item_properties(GtkMenuItem *item, gpointer data) {
-    (void)item;
+static void on_ctx_item_properties(GtkWidget *btn, gpointer data) {
+    (void)btn;
     int idx = GPOINTER_TO_INT(data);
     if (idx >= 0 && idx < g_app.icon_count) {
         DesktopIcon *ic = &g_app.icons[idx];
@@ -493,106 +493,88 @@ static void on_ctx_item_properties(GtkMenuItem *item, gpointer data) {
     }
 }
 
-static void show_desktop_context_menu(GdkEventButton *event, int hit_idx) {
-    GtkWidget *menu = gtk_menu_new();
-    gtk_style_context_add_class(gtk_widget_get_style_context(menu), "win95-menu");
+static void show_desktop_context_menu(MonitorSurface *ms, GdkEventButton *event, int hit_idx) {
+    GdkMonitor *mon = ms ? ms->monitor : NULL;
+    int left = event ? (int)event->x : 100;
+    int top  = event ? (int)event->y : 100;
 
-    if (hit_idx >= 0) {
+    GtkWidget *vbox = NULL;
+    GtkWidget *win = chicago_ctx_menu_begin(mon, left, top, FALSE, &vbox);
+
+    if (hit_idx >= 0 && hit_idx < g_app.icon_count) {
         DesktopIcon *ic = &g_app.icons[hit_idx];
-        GtkWidget *open_mi = gtk_menu_item_new_with_label("Open");
-        g_signal_connect(open_mi, "activate", G_CALLBACK(on_ctx_open_item), GINT_TO_POINTER(hit_idx));
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), open_mi);
+        chicago_ctx_menu_add_item(vbox, "Open", ic->icon_name, TRUE,
+                                  G_CALLBACK(on_ctx_open_item), GINT_TO_POINTER(hit_idx));
+        chicago_ctx_menu_add_item(vbox, "Run with Dedicated GPU (NVIDIA Quadro T1000)", "preferences-desktop-display", FALSE,
+                                  G_CALLBACK(on_ctx_open_item_dgpu), GINT_TO_POINTER(hit_idx));
+        chicago_ctx_menu_add_item(vbox, "Run as Administrator...", "dialog-password", FALSE,
+                                  G_CALLBACK(on_ctx_open_item_admin), GINT_TO_POINTER(hit_idx));
 
-        GtkWidget *gpu_mi = gtk_menu_item_new_with_label("Run with Dedicated GPU (NVIDIA Quadro T1000)");
-        g_signal_connect(gpu_mi, "activate", G_CALLBACK(on_ctx_open_item_dgpu), GINT_TO_POINTER(hit_idx));
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), gpu_mi);
-
-        GtkWidget *adm_mi = gtk_menu_item_new_with_label("Run as Administrator...");
-        g_signal_connect(adm_mi, "activate", G_CALLBACK(on_ctx_open_item_admin), GINT_TO_POINTER(hit_idx));
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), adm_mi);
-
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+        chicago_ctx_menu_add_separator(vbox);
 
         gboolean pinned = chicago_pins_is_pinned(ic->title, ic->command);
-        GtkWidget *pin_mi = gtk_menu_item_new_with_label(pinned ? "Unpin from Taskbar" : "Pin to Taskbar");
-        g_signal_connect(pin_mi, "activate", G_CALLBACK(on_ctx_toggle_pin_item), GINT_TO_POINTER(hit_idx));
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), pin_mi);
+        chicago_ctx_menu_add_item(vbox, pinned ? "Unpin from Taskbar" : "Pin to Taskbar", "preferences-desktop", FALSE,
+                                  G_CALLBACK(on_ctx_toggle_pin_item), GINT_TO_POINTER(hit_idx));
 
         if (ic->is_trash) {
-            gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
-            GtkWidget *empty_mi = gtk_menu_item_new_with_label("Empty Recycle Bin");
-            gtk_widget_set_sensitive(empty_mi, g_app.trash_has_items);
-            g_signal_connect(empty_mi, "activate", G_CALLBACK(on_ctx_empty_trash), NULL);
-            gtk_menu_shell_append(GTK_MENU_SHELL(menu), empty_mi);
+            chicago_ctx_menu_add_separator(vbox);
+            GtkWidget *empty_btn = chicago_ctx_menu_add_item(vbox, "Empty Recycle Bin", "user-trash", FALSE,
+                                                             G_CALLBACK(on_ctx_empty_trash), NULL);
+            gtk_widget_set_sensitive(empty_btn, g_app.trash_has_items);
         }
 
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
-        GtkWidget *prop_mi = gtk_menu_item_new_with_label("Properties");
+        chicago_ctx_menu_add_separator(vbox);
         if (g_strcmp0(ic->title, "My Computer") == 0) {
-            g_signal_connect(prop_mi, "activate", G_CALLBACK(on_ctx_run_cmd), (gpointer)"chicago-control-panel --system");
+            chicago_ctx_menu_add_item(vbox, "Properties", "document-properties", FALSE,
+                                      G_CALLBACK(on_ctx_run_cmd), (gpointer)"chicago-control-panel --system");
         } else if (strstr(ic->title, "Network") != NULL) {
-            g_signal_connect(prop_mi, "activate", G_CALLBACK(on_ctx_run_cmd), (gpointer)"chicago-control-panel --network");
+            chicago_ctx_menu_add_item(vbox, "Properties", "document-properties", FALSE,
+                                      G_CALLBACK(on_ctx_run_cmd), (gpointer)"chicago-control-panel --network");
+        } else if (strstr(ic->title, "Display") != NULL) {
+            chicago_ctx_menu_add_item(vbox, "Properties", "document-properties", FALSE,
+                                      G_CALLBACK(on_ctx_run_cmd), (gpointer)"chicago-control-panel --display");
         } else {
-            g_signal_connect(prop_mi, "activate", G_CALLBACK(on_ctx_item_properties), GINT_TO_POINTER(hit_idx));
+            chicago_ctx_menu_add_item(vbox, "Properties", "document-properties", FALSE,
+                                      G_CALLBACK(on_ctx_item_properties), GINT_TO_POINTER(hit_idx));
         }
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), prop_mi);
     } else {
         /* Standard Windows 95 Desktop Right-Click Menu */
-        GtkWidget *arrange_mi = gtk_menu_item_new_with_label("Arrange Icons");
-        GtkWidget *arrange_sub = gtk_menu_new();
-        GtkWidget *by_name_mi = gtk_menu_item_new_with_label("by Name");
-        g_signal_connect(by_name_mi, "activate", G_CALLBACK(on_ctx_refresh), NULL);
-        gtk_menu_shell_append(GTK_MENU_SHELL(arrange_sub), by_name_mi);
-        GtkWidget *auto_arr_mi = gtk_menu_item_new_with_label("Auto Arrange");
-        g_signal_connect(auto_arr_mi, "activate", G_CALLBACK(on_ctx_line_up_icons), NULL);
-        gtk_menu_shell_append(GTK_MENU_SHELL(arrange_sub), auto_arr_mi);
-        gtk_menu_item_set_submenu(GTK_MENU_ITEM(arrange_mi), arrange_sub);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), arrange_mi);
+        chicago_ctx_menu_add_item(vbox, "Arrange Icons by Name", "view-sort-ascending", FALSE,
+                                  G_CALLBACK(on_ctx_refresh), NULL);
+        chicago_ctx_menu_add_item(vbox, "Line Up Icons", "view-grid", FALSE,
+                                  G_CALLBACK(on_ctx_line_up_icons), NULL);
+        chicago_ctx_menu_add_item(vbox, "Refresh (F5)", "view-refresh", FALSE,
+                                  G_CALLBACK(on_ctx_refresh), NULL);
 
-        GtkWidget *lineup_mi = gtk_menu_item_new_with_label("Line Up Icons");
-        g_signal_connect(lineup_mi, "activate", G_CALLBACK(on_ctx_line_up_icons), NULL);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), lineup_mi);
+        chicago_ctx_menu_add_separator(vbox);
 
-        GtkWidget *refresh_mi = gtk_menu_item_new_with_label("Refresh");
-        g_signal_connect(refresh_mi, "activate", G_CALLBACK(on_ctx_refresh), NULL);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), refresh_mi);
+        chicago_ctx_menu_add_item(vbox, "New Folder", "folder-new", FALSE,
+                                  G_CALLBACK(on_ctx_new_folder), NULL);
+        chicago_ctx_menu_add_item(vbox, "New Text Document", "document-new", FALSE,
+                                  G_CALLBACK(on_ctx_new_text_file), NULL);
+        chicago_ctx_menu_add_item(vbox, "Find / Pin Programs...", "system-search", FALSE,
+                                  G_CALLBACK(on_ctx_run_cmd), (gpointer)"chicago-control-panel --find");
 
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+        chicago_ctx_menu_add_separator(vbox);
 
-        GtkWidget *new_mi = gtk_menu_item_new_with_label("New");
-        GtkWidget *new_sub = gtk_menu_new();
-        GtkWidget *new_folder_mi = gtk_menu_item_new_with_label("Folder");
-        g_signal_connect(new_folder_mi, "activate", G_CALLBACK(on_ctx_new_folder), NULL);
-        gtk_menu_shell_append(GTK_MENU_SHELL(new_sub), new_folder_mi);
+        chicago_ctx_menu_add_item(vbox, "Windows Explorer", "system-file-manager", FALSE,
+                                  G_CALLBACK(on_ctx_run_cmd), (gpointer)"thunar");
+        chicago_ctx_menu_add_item(vbox, "MS-DOS Prompt", "utilities-terminal", FALSE,
+                                  G_CALLBACK(on_ctx_run_cmd),
+                                  (gpointer)"kitty -c ~/.config/chicago-wayland/kitty/kitty.conf --title 'MS-DOS Prompt'");
+        chicago_ctx_menu_add_item(vbox, "Control Panel", "preferences-system", FALSE,
+                                  G_CALLBACK(on_ctx_run_cmd), (gpointer)"chicago-control-panel");
+        chicago_ctx_menu_add_item(vbox, "Lock Workstation", "system-lock-screen", FALSE,
+                                  G_CALLBACK(on_ctx_run_cmd), (gpointer)"chicago-lock");
 
-        GtkWidget *new_txt_mi = gtk_menu_item_new_with_label("Text Document");
-        g_signal_connect(new_txt_mi, "activate", G_CALLBACK(on_ctx_new_text_file), NULL);
-        gtk_menu_shell_append(GTK_MENU_SHELL(new_sub), new_txt_mi);
-        gtk_menu_item_set_submenu(GTK_MENU_ITEM(new_mi), new_sub);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), new_mi);
-
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
-
-        GtkWidget *dos_mi = gtk_menu_item_new_with_label("MS-DOS Prompt");
-        g_signal_connect(dos_mi, "activate", G_CALLBACK(on_ctx_run_cmd),
-                         (gpointer)"kitty -c ~/.config/chicago-wayland/kitty/kitty.conf --title 'MS-DOS Prompt'");
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), dos_mi);
-
-        GtkWidget *cp_mi = gtk_menu_item_new_with_label("Control Panel");
-        g_signal_connect(cp_mi, "activate", G_CALLBACK(on_ctx_run_cmd), (gpointer)"chicago-control-panel");
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), cp_mi);
-
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+        chicago_ctx_menu_add_separator(vbox);
 
         /* Authentic Windows 95 Desktop -> Properties opens Display Properties */
-        GtkWidget *prop_mi = gtk_menu_item_new_with_label("Properties");
-        g_signal_connect(prop_mi, "activate", G_CALLBACK(on_ctx_run_cmd),
-                         (gpointer)"chicago-control-panel --display");
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), prop_mi);
+        chicago_ctx_menu_add_item(vbox, "Properties", "preferences-desktop-display", TRUE,
+                                  G_CALLBACK(on_ctx_run_cmd), (gpointer)"chicago-control-panel --display");
     }
 
-    gtk_widget_show_all(menu);
-    gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)event);
+    chicago_ctx_menu_show(win, mon, left, top, FALSE);
 }
 
 static gboolean on_button_press(GtkWidget *widget, GdkEventButton *event, gpointer data) {
@@ -602,6 +584,7 @@ static gboolean on_button_press(GtkWidget *widget, GdkEventButton *event, gpoint
     int hit = ms->show_icons ? icon_at_point(event->x, event->y) : -1;
 
     if (event->button == 1) {
+        chicago_close_context_menu();
         if (event->type == GDK_2BUTTON_PRESS && hit >= 0) {
             chicago_spawn_command(g_app.icons[hit].command);
             g_app.dragging_icon = FALSE;
@@ -633,7 +616,7 @@ static gboolean on_button_press(GtkWidget *widget, GdkEventButton *event, gpoint
             g_app.selected_index = hit;
             queue_redraw_all();
         }
-        show_desktop_context_menu(event, hit);
+        show_desktop_context_menu(ms, event, hit);
         return TRUE;
     }
 
@@ -751,6 +734,7 @@ static void create_surface_for_monitor(GdkMonitor *mon, int idx) {
         gtk_layer_set_layer(GTK_WINDOW(ms->window), GTK_LAYER_SHELL_LAYER_BACKGROUND);
         if (mon) {
             gtk_layer_set_monitor(GTK_WINDOW(ms->window), mon);
+            g_object_set_data(G_OBJECT(ms->window), "chicago-monitor", mon);
         }
         gtk_layer_set_anchor(GTK_WINDOW(ms->window), GTK_LAYER_SHELL_EDGE_TOP, TRUE);
         gtk_layer_set_anchor(GTK_WINDOW(ms->window), GTK_LAYER_SHELL_EDGE_BOTTOM, TRUE);
