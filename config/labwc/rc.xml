@@ -178,11 +178,30 @@
     <keybind key="A-Print">
       <action name="Execute" command="chicago-capture --window" />
     </keybind>
+    <!-- Laptop-friendly capture shortcuts (No Print key required) -->
+    <keybind key="W-s">
+      <action name="Execute" command="chicago-capture --interactive" />
+    </keybind>
     <keybind key="W-S-s">
+      <action name="Execute" command="chicago-capture --interactive" />
+    </keybind>
+    <keybind key="W-A-s">
       <action name="Execute" command="chicago-capture --snip" />
+    </keybind>
+    <keybind key="W-C-s">
+      <action name="Execute" command="chicago-capture --window" />
     </keybind>
     <keybind key="W-S-a">
       <action name="Execute" command="chicago-capture --edit" />
+    </keybind>
+    <keybind key="W-S-3">
+      <action name="Execute" command="chicago-capture --full" />
+    </keybind>
+    <keybind key="W-S-4">
+      <action name="Execute" command="chicago-capture --snip" />
+    </keybind>
+    <keybind key="W-S-5">
+      <action name="Execute" command="chicago-capture --interactive" />
     </keybind>
     <keybind key="W-p">
       <action name="ToggleAlwaysOnTop" />
