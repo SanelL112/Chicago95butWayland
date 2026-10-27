@@ -198,6 +198,8 @@
   <libinput>
     <device category="touchpad">
       <tap>yes</tap>
+      <tapButtonMap>lrm</tapButtonMap>
+      <clickMethod>clickfinger</clickMethod>
       <naturalScroll>yes</naturalScroll>
       <disableWhileTyping>yes</disableWhileTyping>
     </device>
