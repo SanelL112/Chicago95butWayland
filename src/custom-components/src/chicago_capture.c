@@ -227,42 +227,47 @@ static int do_capture(CaptureMode mode, gboolean include_cursor, gboolean copy_c
  * Interactive Floating Capture Pill (GNOME 42+ capture tool style)
  * ========================================================================= */
 
-static void on_pill_mode_changed(GtkToggleButton *btn, gpointer data) {
-    if (!gtk_toggle_button_get_active(btn)) return;
-    int mode = GPOINTER_TO_INT(data);
-    g_cap.mode = (CaptureMode)mode;
-    if (btn != GTK_TOGGLE_BUTTON(g_cap.pill_btn_region))
-        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_cap.pill_btn_region), mode == CAPTURE_MODE_REGION);
-    if (btn != GTK_TOGGLE_BUTTON(g_cap.pill_btn_screen))
-        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_cap.pill_btn_screen), mode == CAPTURE_MODE_SCREEN);
-    if (btn != GTK_TOGGLE_BUTTON(g_cap.pill_btn_window))
-        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_cap.pill_btn_window), mode == CAPTURE_MODE_WINDOW);
-}
+static void trigger_pill_capture_mode(CaptureMode mode) {
+    g_cap.mode = mode;
 
-static void trigger_pill_capture(void) {
-    gtk_widget_hide(g_cap.pill_window);
-    /* Flush GTK events to unmap overlay before slurp/grim grabs the screen */
+    /* 1. Release keyboard grab before unmapping */
+    if (g_cap.pill_window) {
+        gtk_layer_set_keyboard_mode(GTK_WINDOW(g_cap.pill_window), GTK_LAYER_SHELL_KEYBOARD_MODE_NONE);
+        gtk_widget_hide(g_cap.pill_window);
+    }
+
+    /* 2. Flush GDK and Wayland display to guarantee compositor unmaps surface */
+    GdkDisplay *disp = gdk_display_get_default();
+    if (disp) {
+        gdk_display_flush(disp);
+        gdk_display_sync(disp);
+    }
     while (gtk_events_pending()) gtk_main_iteration();
-    usleep(50000); /* 50ms buffer */
+    if (disp) gdk_display_flush(disp);
+    usleep(80000); /* 80ms buffer */
 
-    gboolean cur = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(g_cap.pill_chk_cursor));
-    gboolean swp = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(g_cap.pill_chk_swappy));
+    gboolean cur = g_cap.pill_chk_cursor ? gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(g_cap.pill_chk_cursor)) : FALSE;
+    gboolean swp = g_cap.pill_chk_swappy ? gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(g_cap.pill_chk_swappy)) : FALSE;
 
     int res = do_capture(g_cap.mode, cur, TRUE, TRUE, swp, 0,
                          g_cap.last_captured_path, sizeof(g_cap.last_captured_path));
 
     if (res != 0) {
-        /* Cancelled: re-show overlay */
-        gtk_widget_show_all(g_cap.pill_window);
+        /* Cancelled by user (e.g. Esc in slurp): restore keyboard mode & re-show pill */
+        if (g_cap.pill_window) {
+            gtk_layer_set_keyboard_mode(GTK_WINDOW(g_cap.pill_window), GTK_LAYER_SHELL_KEYBOARD_MODE_ON_DEMAND);
+            gtk_widget_show_all(g_cap.pill_window);
+        }
     } else {
         /* Success: exit cleanly */
         gtk_main_quit();
     }
 }
 
-static void on_pill_shutter_clicked(GtkButton *btn, gpointer data) {
-    (void)btn; (void)data;
-    trigger_pill_capture();
+static void on_pill_action_clicked(GtkButton *btn, gpointer data) {
+    (void)btn;
+    CaptureMode cm = (CaptureMode)GPOINTER_TO_INT(data);
+    trigger_pill_capture_mode(cm);
 }
 
 static gboolean on_pill_key_press(GtkWidget *widget, GdkEventKey *event, gpointer data) {
@@ -272,7 +277,19 @@ static gboolean on_pill_key_press(GtkWidget *widget, GdkEventKey *event, gpointe
         return TRUE;
     }
     if (event->keyval == GDK_KEY_Return || event->keyval == GDK_KEY_KP_Enter || event->keyval == GDK_KEY_space) {
-        trigger_pill_capture();
+        trigger_pill_capture_mode(g_cap.mode);
+        return TRUE;
+    }
+    if (event->keyval == GDK_KEY_s || event->keyval == GDK_KEY_S) {
+        trigger_pill_capture_mode(CAPTURE_MODE_REGION);
+        return TRUE;
+    }
+    if (event->keyval == GDK_KEY_f || event->keyval == GDK_KEY_F) {
+        trigger_pill_capture_mode(CAPTURE_MODE_SCREEN);
+        return TRUE;
+    }
+    if (event->keyval == GDK_KEY_w || event->keyval == GDK_KEY_W) {
+        trigger_pill_capture_mode(CAPTURE_MODE_WINDOW);
         return TRUE;
     }
     return FALSE;
@@ -302,21 +319,24 @@ static void create_interactive_pill(void) {
     gtk_box_pack_start(GTK_BOX(title_box), title_lbl, FALSE, FALSE, 2);
     gtk_box_pack_start(GTK_BOX(hbox), title_box, FALSE, FALSE, 0);
 
-    /* Mode Radio Buttons */
-    g_cap.pill_btn_region = gtk_toggle_button_new_with_label("Selection");
+    /* Direct Action Buttons: Clicking immediately initiates that capture mode! */
+    g_cap.pill_btn_region = gtk_button_new_with_label("Selection (S)");
     gtk_style_context_add_class(gtk_widget_get_style_context(g_cap.pill_btn_region), "pill-btn");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_cap.pill_btn_region), TRUE);
-    g_signal_connect(g_cap.pill_btn_region, "toggled", G_CALLBACK(on_pill_mode_changed), GINT_TO_POINTER(CAPTURE_MODE_REGION));
+    gtk_style_context_add_class(gtk_widget_get_style_context(g_cap.pill_btn_region), "capture-shutter-btn");
+    gtk_widget_set_tooltip_text(g_cap.pill_btn_region, "Click to drag and select a rectangular area to capture");
+    g_signal_connect(g_cap.pill_btn_region, "clicked", G_CALLBACK(on_pill_action_clicked), GINT_TO_POINTER(CAPTURE_MODE_REGION));
     gtk_box_pack_start(GTK_BOX(hbox), g_cap.pill_btn_region, FALSE, FALSE, 0);
 
-    g_cap.pill_btn_screen = gtk_toggle_button_new_with_label("Screen");
+    g_cap.pill_btn_screen = gtk_button_new_with_label("Screen (F)");
     gtk_style_context_add_class(gtk_widget_get_style_context(g_cap.pill_btn_screen), "pill-btn");
-    g_signal_connect(g_cap.pill_btn_screen, "toggled", G_CALLBACK(on_pill_mode_changed), GINT_TO_POINTER(CAPTURE_MODE_SCREEN));
+    gtk_widget_set_tooltip_text(g_cap.pill_btn_screen, "Click to capture full screen or click a monitor");
+    g_signal_connect(g_cap.pill_btn_screen, "clicked", G_CALLBACK(on_pill_action_clicked), GINT_TO_POINTER(CAPTURE_MODE_SCREEN));
     gtk_box_pack_start(GTK_BOX(hbox), g_cap.pill_btn_screen, FALSE, FALSE, 0);
 
-    g_cap.pill_btn_window = gtk_toggle_button_new_with_label("Window");
+    g_cap.pill_btn_window = gtk_button_new_with_label("Window (W)");
     gtk_style_context_add_class(gtk_widget_get_style_context(g_cap.pill_btn_window), "pill-btn");
-    g_signal_connect(g_cap.pill_btn_window, "toggled", G_CALLBACK(on_pill_mode_changed), GINT_TO_POINTER(CAPTURE_MODE_WINDOW));
+    gtk_widget_set_tooltip_text(g_cap.pill_btn_window, "Click to select and capture a specific window");
+    g_signal_connect(g_cap.pill_btn_window, "clicked", G_CALLBACK(on_pill_action_clicked), GINT_TO_POINTER(CAPTURE_MODE_WINDOW));
     gtk_box_pack_start(GTK_BOX(hbox), g_cap.pill_btn_window, FALSE, FALSE, 0);
 
     /* Separator */
@@ -325,10 +345,12 @@ static void create_interactive_pill(void) {
 
     /* Options: Cursor, Swappy */
     g_cap.pill_chk_cursor = gtk_check_button_new_with_label("Pointer");
+    gtk_widget_set_tooltip_text(g_cap.pill_chk_cursor, "Include mouse cursor in screenshot");
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_cap.pill_chk_cursor), FALSE);
     gtk_box_pack_start(GTK_BOX(hbox), g_cap.pill_chk_cursor, FALSE, FALSE, 0);
 
     g_cap.pill_chk_swappy = gtk_check_button_new_with_label("Annotate");
+    gtk_widget_set_tooltip_text(g_cap.pill_chk_swappy, "Open in Swappy image editor immediately after capture");
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_cap.pill_chk_swappy), FALSE);
     gtk_box_pack_start(GTK_BOX(hbox), g_cap.pill_chk_swappy, FALSE, FALSE, 0);
 
@@ -336,14 +358,9 @@ static void create_interactive_pill(void) {
     GtkWidget *sep2 = gtk_separator_new(GTK_ORIENTATION_VERTICAL);
     gtk_box_pack_start(GTK_BOX(hbox), sep2, FALSE, FALSE, 2);
 
-    /* Shutter Button */
-    GtkWidget *shutter_btn = gtk_button_new_with_label("Capture (Enter)");
-    gtk_style_context_add_class(gtk_widget_get_style_context(shutter_btn), "capture-shutter-btn");
-    g_signal_connect(shutter_btn, "clicked", G_CALLBACK(on_pill_shutter_clicked), NULL);
-    gtk_box_pack_start(GTK_BOX(hbox), shutter_btn, FALSE, FALSE, 0);
-
     /* Close Button */
-    GtkWidget *close_btn = gtk_button_new_with_label("✕");
+    GtkWidget *close_btn = gtk_button_new_with_label("✕ (Esc)");
+    gtk_widget_set_tooltip_text(close_btn, "Cancel and close capture bar");
     g_signal_connect(close_btn, "clicked", G_CALLBACK(gtk_main_quit), NULL);
     gtk_box_pack_start(GTK_BOX(hbox), close_btn, FALSE, FALSE, 0);
 
