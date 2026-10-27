@@ -2,7 +2,7 @@
 # Chicago-Wayland Labwc Autostart Script
 # Event-driven, minimal idle overhead
 
-export PATH="$HOME/chicago-wayland/bin:$HOME/.local/bin:$HOME/.local/share/chicago-wayland/runtime/usr/bin:$PATH"
+export PATH="${CHICAGO_REPO_DIR:-$HOME/chicago-wayland}/bin:$HOME/.local/bin:$HOME/.local/share/chicago-wayland/runtime/usr/bin:$PATH"
 export LD_LIBRARY_PATH="$HOME/.local/share/chicago-wayland/runtime/usr/lib64:${LD_LIBRARY_PATH:-}"
 
 # 1. Propagate Wayland environment to DBus / systemd only in standalone session mode
@@ -18,6 +18,11 @@ if [ "${CHICAGO_NESTED:-0}" != "1" ]; then
     if command -v kanshi >/dev/null 2>&1 && [ -f "$HOME/.config/chicago-wayland/kanshi/config" ]; then
         kanshi -c "$HOME/.config/chicago-wayland/kanshi/config" >/dev/null 2>&1 &
     fi
+fi
+
+# React to PPD/UPower changes without polling or changing external monitors.
+if [ "${CHICAGO_NESTED:-0}" != "1" ]; then
+    chicago-power watch >>"${XDG_RUNTIME_DIR}/chicago-power.log" 2>&1 &
 fi
 
 # 3. Launch Classic Windows 95 Teal Desktop + Desktop Icons
@@ -51,6 +56,11 @@ if [ "${CHICAGO_NESTED:-0}" != "1" ] && command -v swayidle >/dev/null 2>&1; the
 fi
 
 # 7. Optional Startup Sound (disabled by default for silent/low-power startup; enable via CHICAGO_STARTUP_SOUND=1)
-if [ "${CHICAGO_STARTUP_SOUND:-0}" = "1" ] && [ -f "$HOME/chicago-wayland/themes/sounds/startup.ogg" ]; then
-    pw-play "$HOME/chicago-wayland/themes/sounds/startup.ogg" >/dev/null 2>&1 &
+if [ "${CHICAGO_STARTUP_SOUND:-0}" = "1" ] && [ -f "${CHICAGO_REPO_DIR:-$HOME/chicago-wayland}/themes/sounds/startup.ogg" ]; then
+    pw-play "${CHICAGO_REPO_DIR:-$HOME/chicago-wayland}/themes/sounds/startup.ogg" >/dev/null 2>&1 &
+fi
+
+# Keep locally staged PSR update trials confirmable in this desktop too.
+if [ "${CHICAGO_NESTED:-0}" != "1" ] && [ -f /usr/local/lib/precision-psr-auto/gui.py ]; then
+    python3 /usr/local/lib/precision-psr-auto/gui.py --login >/dev/null 2>&1 &
 fi

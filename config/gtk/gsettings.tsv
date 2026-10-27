@@ -1,0 +1,6 @@
+org.gnome.desktop.interface gtk-theme Chicago95
+org.gnome.desktop.interface icon-theme Chicago95
+org.gnome.desktop.interface cursor-theme Chicago95_Cursor_Black
+org.gnome.desktop.interface color-scheme default
+org.gnome.desktop.interface font-name W95FA 8
+org.gnome.desktop.wm.preferences button-layout icon:minimize,maximize,close

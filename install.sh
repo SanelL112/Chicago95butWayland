@@ -5,8 +5,9 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNTIME_DIR="$HOME/.local/share/chicago-wayland/runtime"
-CONFIG_DEST="$HOME/.config/chicago-wayland"
-STATE_DIR="$HOME/.local/state/chicago-wayland"
+CONFIG_DEST="${XDG_CONFIG_HOME:-$HOME/.config}/chicago-wayland"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/chicago-wayland"
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}"
 INIT_BACKUP="$STATE_DIR/initial-backup"
 
 INSTALL_SYSTEM_SESSION=0
@@ -26,6 +27,11 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+if [[ "$EUID" == 0 ]]; then
+    echo 'Run this installer as the desktop user; it uses sudo for system steps only.' >&2
+    exit 1
+fi
 
 echo "========================================================"
 echo " Installing Chicago-Wayland (Windows 95 Wayland Desktop)"
@@ -49,7 +55,7 @@ fi
 echo "[2/6] Checking Wayland compositor (labwc) and utilities..."
 if [[ "$INSTALL_SYSTEM_PKGS" -eq 1 ]]; then
     echo "      Installing Fedora packages via sudo dnf install..."
-    sudo dnf install -y labwc sfwbar swaybg swaylock swayidle mako kanshi xdg-desktop-portal-wlr
+    sudo dnf install -y gcc make pkgconf-pkg-config gtk3-devel gtk-layer-shell-devel pam-devel gtk-session-lock-devel meson ninja-build wayland-devel wayland-protocols-devel git python3-pillow python3-gobject power-profiles-daemon labwc sfwbar swaybg swaylock swayidle mako kanshi xdg-desktop-portal-wlr grim slurp swappy wl-clipboard wlr-randr kitty thunar NetworkManager wireplumber
 elif ! command -v labwc >/dev/null 2>&1 && [[ ! -x "$RUNTIME_DIR/usr/bin/labwc" ]]; then
     echo "      Extracting Fedora 44 runtime packages into user-local $RUNTIME_DIR..."
     mkdir -p "$RUNTIME_DIR"
@@ -57,7 +63,7 @@ elif ! command -v labwc >/dev/null 2>&1 && [[ ! -x "$RUNTIME_DIR/usr/bin/labwc" 
     (
         cd "$TMP_RPM_DIR"
         dnf5 download --resolve --arch=x86_64 --arch=noarch \
-            labwc sfwbar swaybg swaylock swayidle mako kanshi xdg-desktop-portal-wlr
+            labwc sfwbar swaybg swaylock swayidle mako kanshi xdg-desktop-portal-wlr grim slurp swappy wl-clipboard wlr-randr
         cd "$RUNTIME_DIR"
         for rpm in "$TMP_RPM_DIR"/*.rpm; do
             rpm2cpio "$rpm" | cpio -idmu --quiet
@@ -68,15 +74,29 @@ else
     echo "      Runtime available at $RUNTIME_DIR/usr/bin/labwc"
 fi
 
+export PATH="$RUNTIME_DIR/usr/bin:$PATH"
+export LD_LIBRARY_PATH="$RUNTIME_DIR/usr/lib64:${LD_LIBRARY_PATH:-}"
+for tool in make cc pkg-config wayland-scanner; do
+    command -v "$tool" >/dev/null || { echo "Missing build prerequisite: $tool (use --system-packages)." >&2; exit 1; }
+done
+pkg-config --exists gtk+-3.0 gtk-layer-shell-0 wayland-client gio-unix-2.0 cairo pango || {
+    echo 'Missing development headers: use --system-packages or install GTK3, gtk-layer-shell and Wayland development packages.' >&2
+    exit 1
+}
+if [[ ! -f /etc/pam.d/swaylock ]]; then
+    echo 'The system swaylock PAM service is missing; install the Fedora swaylock package before using screen locking.' >&2
+    exit 1
+fi
 # 3. Compile custom native C components (chicago-desktop, chicago-taskbar, chicago-control-panel)
 echo "[3/6] Building native C Windows 95 desktop components..."
+"$REPO_DIR/scripts/build-lock-dependency.sh"
 make -C "$REPO_DIR/src/custom-components"
 
 # 4. Install binaries into ~/.local/bin
 echo "[4/6] Installing binaries to $HOME/.local/bin..."
 mkdir -p "$HOME/.local/bin"
 chmod +x "$REPO_DIR/bin/start-chicago-wayland" "$REPO_DIR/config/labwc/autostart"
-for bin_name in chicago-desktop chicago-taskbar chicago-control-panel start-chicago-wayland; do
+for bin_name in chicago-desktop chicago-taskbar chicago-control-panel chicago-power chicago-lock chicago-lock-custom chicago-lock-face chicago-capture toggle-scratchpad-terminal.sh start-chicago-wayland; do
     ln -sf "$REPO_DIR/bin/$bin_name" "$HOME/.local/bin/$bin_name"
 done
 
@@ -90,26 +110,39 @@ cp -rf "$REPO_DIR/config/kanshi" "$CONFIG_DEST/"
 cp -rf "$REPO_DIR/config/kitty" "$CONFIG_DEST/"
 cp -rf "$REPO_DIR/config/gtk" "$CONFIG_DEST/"
 
-mkdir -p "$HOME/.local/share/themes/Chicago95/labwc"
-cp -rf "$REPO_DIR/themes/window-decorations/Chicago95/labwc/." "$HOME/.local/share/themes/Chicago95/labwc/"
-cp -rf "$REPO_DIR/themes/window-decorations/Chicago95/openbox-3/." "$HOME/.local/share/themes/Chicago95/openbox-3/"
+"$REPO_DIR/scripts/install-assets.sh"
 
 # 6. Install Wayland session desktop entry
 echo "[6/6] Registering Wayland session entry..."
-mkdir -p "$HOME/.local/share/wayland-sessions"
-cp -f "$REPO_DIR/sessions/chicago-wayland.desktop" "$HOME/.local/share/wayland-sessions/chicago-wayland.desktop"
+mkdir -p "$DATA_DIR/wayland-sessions"
+python3 - "$REPO_DIR/sessions/chicago-wayland.desktop" "$DATA_DIR/wayland-sessions/chicago-wayland.desktop" "$HOME/.local/bin/start-chicago-wayland" <<'PY_SESSION'
+from pathlib import Path
+import sys
+# Desktop Entry Exec quoting, including literal percent and reserved characters.
+slash = chr(92)
+path = sys.argv[3]
+for char in (slash, '"', '`', '$'):
+    path = path.replace(char, slash + char)
+path = path.replace('%', '%%').replace(slash, slash * 2)
+lines = Path(sys.argv[1]).read_text().splitlines()
+lines = [('Exec="' + path + '"') if line.startswith('Exec=') else
+         ('TryExec=' + sys.argv[3]) if line.startswith('TryExec=') else line
+         for line in lines]
+Path(sys.argv[2]).write_text('\n'.join(lines) + '\n')
+PY_SESSION
 
 if [[ "$INSTALL_SYSTEM_SESSION" -eq 1 ]]; then
     echo "      Installing binaries to /usr/local/bin and session entry to /usr/share/wayland-sessions/..."
-    sudo install -m 0755 "$REPO_DIR/bin/start-chicago-wayland" /usr/local/bin/start-chicago-wayland
-    sudo install -m 0755 "$REPO_DIR/bin/chicago-desktop" /usr/local/bin/chicago-desktop
-    sudo install -m 0755 "$REPO_DIR/bin/chicago-taskbar" /usr/local/bin/chicago-taskbar
-    sudo install -m 0755 "$REPO_DIR/bin/chicago-control-panel" /usr/local/bin/chicago-control-panel
+    sudo mkdir -p /usr/local/share/chicago-wayland /usr/share/wayland-sessions
+    sudo cp -a "$REPO_DIR/bin" "$REPO_DIR/config" "$REPO_DIR/scripts" "$REPO_DIR/themes" "$REPO_DIR/lib" "$REPO_DIR/third_party" /usr/local/share/chicago-wayland/
+    for bin_name in chicago-desktop chicago-taskbar chicago-control-panel chicago-power chicago-lock chicago-lock-custom chicago-lock-face chicago-capture toggle-scratchpad-terminal.sh start-chicago-wayland; do
+        sudo ln -sf "/usr/local/share/chicago-wayland/bin/$bin_name" "/usr/local/bin/$bin_name"
+    done
     sudo install -m 0644 "$REPO_DIR/sessions/chicago-wayland.desktop" /usr/share/wayland-sessions/chicago-wayland.desktop
     sudo restorecon -v /usr/local/bin/start-chicago-wayland /usr/local/bin/chicago-* /usr/share/wayland-sessions/chicago-wayland.desktop 2>/dev/null || true
 else
     echo "      Installed user session: $HOME/.local/share/wayland-sessions/chicago-wayland.desktop"
-    echo "      (To also expose in GDM system-wide login screen, run: sudo ./install.sh --system-session)"
+    echo "      (To also expose in GDM system-wide login screen, run: ./install.sh --system-session)"
 fi
 
 echo "========================================================"

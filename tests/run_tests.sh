@@ -9,6 +9,8 @@ export LD_LIBRARY_PATH="$RUNTIME_DIR/usr/lib64:${LD_LIBRARY_PATH:-}"
 
 PASS=0
 FAIL=0
+SKIP=0
+export REPO_DIR
 
 assert_test() {
     local name="$1"
@@ -28,11 +30,11 @@ echo "========================================================"
 
 # 1. Static XML & Config Validation
 assert_test "XML validation: config/labwc/rc.xml" \
-    python3 -c "import xml.etree.ElementTree as ET; ET.parse('$REPO_DIR/config/labwc/rc.xml')"
+    python3 -c 'import sys,xml.etree.ElementTree as ET; ET.parse(sys.argv[1])' "$REPO_DIR/config/labwc/rc.xml"
 assert_test "XML validation: config/labwc/menu.xml" \
-    python3 -c "import xml.etree.ElementTree as ET; ET.parse('$REPO_DIR/config/labwc/menu.xml')"
+    python3 -c 'import sys,xml.etree.ElementTree as ET; ET.parse(sys.argv[1])' "$REPO_DIR/config/labwc/menu.xml"
 assert_test "XML validation: wlr-foreign-toplevel-management-unstable-v1.xml" \
-    python3 -c "import xml.etree.ElementTree as ET; ET.parse('$REPO_DIR/src/custom-components/protocols/wlr-foreign-toplevel-management-unstable-v1.xml')"
+    python3 -c 'import sys,xml.etree.ElementTree as ET; ET.parse(sys.argv[1])' "$REPO_DIR/src/custom-components/protocols/wlr-foreign-toplevel-management-unstable-v1.xml"
 
 # 2. Windows 95 Visual Fidelity & Power Config Checks
 assert_test "Square window corners (<cornerRadius>0</cornerRadius>)" \
@@ -52,6 +54,8 @@ assert_test "Window border Classic Gray #c0c0c0 in themerc" \
 assert_test "Binary present: chicago-desktop" test -x "$REPO_DIR/bin/chicago-desktop"
 assert_test "Binary present: chicago-taskbar" test -x "$REPO_DIR/bin/chicago-taskbar"
 assert_test "Binary present: chicago-control-panel" test -x "$REPO_DIR/bin/chicago-control-panel"
+assert_test "Binary present: chicago-lock-face" test -x "$REPO_DIR/bin/chicago-lock-face"
+assert_test "Binary present: chicago-lock-custom" test -x "$REPO_DIR/bin/chicago-lock-custom"
 assert_test "Binary present: chicago-lock" test -x "$REPO_DIR/bin/chicago-lock"
 assert_test "Binary present: chicago-capture" test -x "$REPO_DIR/bin/chicago-capture"
 assert_test "Binary present: start-chicago-wayland" test -x "$REPO_DIR/bin/start-chicago-wayland"
@@ -88,8 +92,15 @@ for r in required:
     assert im.size[0] > 0 and im.size[1] > 0
 "
 
-# 4. Live Headless Wayland Integration Test (Clipboard, Multi-Window, Minimize/Restore, Pixel Check)
+assert_test "Configuration, argv safety, singleton, locker, capture and installer regressions" \
+    python3 "$REPO_DIR/tests/regression.py"
+
+# 4. Isolated headless smoke test: clipboard, dialog processes, palette.
+# Start-menu interaction, minimize/restore and physical lock/suspend require manual QA.
 TMP_TEST_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_TEST_DIR"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 INNER_TEST="$TMP_TEST_DIR/inner_test.sh"
 cat << 'EOF' > "$INNER_TEST"
 #!/usr/bin/env bash
@@ -126,17 +137,25 @@ labwc -e
 EOF
 chmod +x "$INNER_TEST"
 
-if [[ -f "$HOME/.config/chicago-wayland/desktop.conf" ]]; then
-    cp -f "$HOME/.config/chicago-wayland/desktop.conf" "$TMP_TEST_DIR/desktop.conf.bak"
-    rm -f "$HOME/.config/chicago-wayland/desktop.conf"
+# No user files are moved: the helper supplies a private HOME and runtime.
+HYPR_BEFORE="$(find "$HOME/.config/hypr" -type f -exec sha256sum {} + 2>/dev/null | sort || true)"
+STARTUP_CMD="$(python3 -c 'import shlex,sys; print(shlex.join(sys.argv[1:]))' "$INNER_TEST" "$TMP_TEST_DIR")"
+INTEGRATION_STATUS=0
+if [[ "${1:-}" == "--static" ]]; then
+    INTEGRATION_STATUS=77
+else
+    python3 "$REPO_DIR/scripts/isolated.py" "$REPO_DIR/bin/start-chicago-wayland" \
+        --headless --startup "$STARTUP_CMD" || INTEGRATION_STATUS=$?
 fi
-"$REPO_DIR/bin/start-chicago-wayland" --headless --startup "$INNER_TEST $TMP_TEST_DIR" >/dev/null 2>&1
-if [[ -f "$TMP_TEST_DIR/desktop.conf.bak" ]]; then
-    cp -f "$TMP_TEST_DIR/desktop.conf.bak" "$HOME/.config/chicago-wayland/desktop.conf"
-fi
-
+if [[ "$INTEGRATION_STATUS" == 77 ]]; then
+    echo '  [SKIP] Live clipboard, rendering and dialog smoke checks'
+    SKIP=$((SKIP + 3))
+elif [[ "$INTEGRATION_STATUS" != 0 ]]; then
+    echo "  [FAIL] Isolated compositor smoke test (exit $INTEGRATION_STATUS)"
+    FAIL=$((FAIL + 1))
+else
 assert_test "Wayland session clipboard roundtrip (wl-copy / wl-paste)" test -f "$TMP_TEST_DIR/clipboard.ok"
-assert_test "Wayland multi-window + Start menu + Minimize/Restore lifecycle" test -f "$TMP_TEST_DIR/multiwin.ok"
+assert_test "Three dialog processes remain alive" test -f "$TMP_TEST_DIR/multiwin.ok"
 assert_test "Rendered pixel verification (#008080 desktop teal & #c0c0c0 taskbar gray)" \
     python3 -c "
 from PIL import Image
@@ -148,17 +167,15 @@ assert teal == (0, 128, 128), f'Expected teal (0,128,128), got {teal}'
 assert gray == (192, 192, 192), f'Expected gray (192,192,192), got {gray}'
 "
 
-rm -rf "$TMP_TEST_DIR"
-
-# 5. Hyprland Non-Interference Check
-assert_test "Hyprland config untouched (~/.config/hypr/hyprland.conf)" test -f "$HOME/.config/hypr/hyprland.conf"
-if [[ "${XDG_SESSION_DESKTOP:-}" == "chicago-wayland" ]]; then
-    assert_test "Session GTK swap lock valid for current session state" test -f "$HOME/.local/state/chicago-wayland/gtk-swapped.lock"
-else
-    assert_test "No residual GTK swap lock left after headless test" test ! -f "$HOME/.local/state/chicago-wayland/gtk-swapped.lock"
 fi
 
+# 5. Verify the pre-existing Hyprland files have the same hashes.
+HYPR_AFTER="$(find "$HOME/.config/hypr" -type f -exec sha256sum {} + 2>/dev/null | sort || true)"
+assert_test "Hyprland configuration file hashes unchanged" test "$HYPR_BEFORE" = "$HYPR_AFTER"
+echo '  [SKIP] Manual QA: Start menu, minimize/restore, lock crash/hotplug and suspend/resume'
+SKIP=$((SKIP + 1))
+
 echo "========================================================"
-echo " Test Results: $PASS passed, $FAIL failed."
+echo " Test Results: $PASS passed, $FAIL failed, $SKIP skipped."
 echo "========================================================"
 [[ "$FAIL" -eq 0 ]]

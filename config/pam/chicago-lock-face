@@ -1,0 +1,4 @@
+#%PAM-1.0
+# Face-only authentication: no login/password fallback or password failure counter.
+# Use the existing system Howdy helper; a nonzero exit denies authentication.
+auth required pam_exec.so quiet seteuid /usr/local/bin/howdy-pam

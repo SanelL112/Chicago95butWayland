@@ -55,7 +55,7 @@
     </item>
     <separator />
     <item label="Lock Workstation">
-      <action name="Execute" command="swaylock -f -c 008080" />
+      <action name="Execute" command="chicago-lock" />
     </item>
     <item label="Shut Down...">
       <action name="Execute" command="chicago-control-panel --shutdown" />

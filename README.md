@@ -1,6 +1,6 @@
 # Chicago-Wayland: Native Windows 95 Wayland Desktop for Fedora
 
-**Chicago-Wayland** is a lightweight, native Wayland desktop environment for Fedora Linux 44 designed to recreate the visual styling, window management, taskbar, Start menu, desktop icons, and system dialogs of **Microsoft Windows 95** while operating on a modern, zero-polling `wlroots` / `labwc` Wayland stack.
+**Chicago-Wayland** is a lightweight, native Wayland desktop environment for Fedora Linux 44 designed to recreate the visual styling, window management, taskbar, Start menu, desktop icons, and system dialogs of **Microsoft Windows 95** while operating on a modern `wlroots` / `labwc` Wayland stack.
 
 ---
 
@@ -112,7 +112,7 @@ cd ~/chicago-wayland
 
 ### 2. Optional: Register Session with GDM Login Screen (Requires `sudo`)
 ```bash
-sudo ./install.sh --system-session
+./install.sh --system-session
 ```
 
 ### 3. Test in a Nested Window Inside Hyprland
@@ -131,3 +131,48 @@ start-chicago-wayland --nested
 ```bash
 ./uninstall.sh
 ```
+
+## Security and validation
+
+`chicago-lock` runs the custom Chicago95 GTK interface on secure
+`ext-session-lock-v1` surfaces through gtk-session-lock. It preserves the teal
+background, navy titlebar, key/flag artwork and password dialog. PAM uses the
+system swaylock authentication service. Howdy IR face authentication uses a
+separate face-only PAM policy and your existing system Howdy helper. An automatic
+scan starts after lock acknowledgement, with a Face Auth button for retry.
+Cancel clears the entry; it cannot dismiss the lock. The command returns success
+only after the compositor acknowledges locking, including for swayidle before-sleep. A face miss leaves password entry available; `--no-auto-face`
+disables the automatic scan while retaining the retry button.
+
+Use `chicago-lock --swaylock` for the maintained fallback, or `--foreground` to
+keep the command running until authentication finishes. Automatic fallback is
+limited to missing backend/library or unsupported display/protocol before a
+custom lock request is sent. A denied, failed, crashed or timed-out lock request
+never triggers an unlock or a replacement locker.
+
+For a source build, install gtk-session-lock-devel and pam-devel, or run
+`scripts/build-lock-dependency.sh` for the pinned user-local library before make.
+The installer performs this dependency step. The library is loaded relative to
+the custom executable from lib/, so the installed locker can move with its tree.
+See [docs/custom-lock.md](docs/custom-lock.md) for implementation and verification.
+
+`python3 tests/regression.py` checks settings recovery, safe argument handling,
+per-display singleton behavior, capture cleanup, locker delegation, and installation
+assets using temporary homes and mock tools. `tests/run_tests.sh` additionally runs
+static asset checks and an isolated compositor smoke test. Blocked live checks are
+reported as skipped; `--static` explicitly skips the compositor. Physical monitor,
+lock crash, suspend/resume, and input behavior still need the checks in
+[docs/validation.md](docs/validation.md).
+
+`chicago-capture --window` is a compatibility alias for manual region selection;
+the UI labels it "Window region (manual)". It does not claim automatic window
+geometry. Clipboard-only captures use private temporary files and remove them
+once clipboard/editor consumers finish reading.
+
+The installer works from any checkout location, installs all shell commands,
+fonts, backgrounds and application entries, and retrieves missing GTK/icon assets
+from the [upstream Chicago95 project](https://github.com/grassmunk/Chicago95).
+For offline installs set `CHICAGO95_SOURCE=/path/to/Chicago95` to an existing
+upstream checkout. `--system-packages` installs Fedora build/runtime dependencies;
+`--user` requires the development headers and runtime utilities to be available.
+Run installation as your desktop user; the script uses sudo only for system steps.

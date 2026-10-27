@@ -118,7 +118,7 @@ static void get_default_screenshots_dir(char *buf, size_t len) {
     g_mkdir_with_parents(buf, 0755);
 }
 
-static void generate_screenshot_filename(char *buf, size_t len) {
+static gboolean generate_screenshot_filename(char *buf, size_t len) {
     char dir[512];
     get_default_screenshots_dir(dir, sizeof(dir));
     time_t now = time(NULL);
@@ -126,7 +126,11 @@ static void generate_screenshot_filename(char *buf, size_t len) {
     localtime_r(&now, &tm_info);
     char time_str[64];
     strftime(time_str, sizeof(time_str), "%Y-%m-%d_%H.%M.%S", &tm_info);
-    snprintf(buf, len, "%s/Screenshot_%s.png", dir, time_str);
+    snprintf(buf, len, "%s/Screenshot_%s_XXXXXX.png", dir, time_str);
+    int fd = mkstemps(buf, 4);
+    if (fd < 0) return FALSE;
+    close(fd);
+    return TRUE;
 }
 
 static void play_shutter_sound(void) {
@@ -134,93 +138,87 @@ static void play_shutter_sound(void) {
                           "pw-play /usr/share/sounds/freedesktop/stereo/camera-shutter.oga 2>/dev/null &");
 }
 
-static void send_capture_notification(const char *filepath) {
-    char cmd[1536];
-    const char *fn = g_path_get_basename(filepath);
-    snprintf(cmd, sizeof(cmd),
-             "notify-send -a \"Capture Tool\" -i \"%s\" "
-             "\"Screenshot Captured\" \"Saved to %s\\nCopied to clipboard\"",
-             filepath, fn);
-    chicago_spawn_command(cmd);
+static gboolean capture_command(const char *const *argv, const char *stdin_path) {
+    GError *err = NULL;
+    GSubprocessLauncher *launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_NONE);
+    if (stdin_path) g_subprocess_launcher_set_stdin_file_path(launcher, stdin_path);
+    GSubprocess *proc = g_subprocess_launcher_spawnv(launcher, argv, &err);
+    g_object_unref(launcher);
+    gboolean ok = proc && g_subprocess_wait_check(proc, NULL, &err);
+    if (err) {
+        g_warning("%s failed: %s", argv[0], err->message);
+        g_clear_error(&err);
+    }
+    if (proc) g_object_unref(proc);
+    return ok;
 }
 
-/*
- * Core capture execution function
- * Returns 0 on success, -1 on cancel / error
- */
+static gboolean copy_capture(const char *path) {
+    const char *args[] = { "wl-copy", "--type", "image/png", NULL };
+    /* wl-copy reads its input before daemonizing; only then may we unlink it. */
+    return capture_command(args, path);
+}
+
+/* Returns 0 on success. Temporary captures are removed after every consumer
+ * has read them; CLI clipboard-only mode never leaves images in /tmp. */
 static int do_capture(CaptureMode mode, gboolean include_cursor, gboolean copy_clipboard,
                       gboolean save_disk, gboolean open_swappy, int delay_sec,
                       char *out_path_buf, size_t out_path_len) {
-    if (delay_sec > 0) {
-        sleep(delay_sec);
-    }
-
+    if (delay_sec > 0) sleep(delay_sec);
     char target_file[1024];
+    char *temp_path = NULL;
+    char *geom = NULL;
+    gboolean ok = FALSE;
     if (save_disk) {
-        generate_screenshot_filename(target_file, sizeof(target_file));
+        if (!generate_screenshot_filename(target_file, sizeof(target_file))) return -1;
     } else {
-        snprintf(target_file, sizeof(target_file), "/tmp/chicago_capture_%d.png", (int)getpid());
+        int fd = g_file_open_tmp("chicago-capture-XXXXXX.png", &temp_path, NULL);
+        if (fd < 0) return -1;
+        close(fd);
+        g_strlcpy(target_file, temp_path, sizeof(target_file));
     }
-
-    char cursor_arg[16] = "";
-    if (include_cursor) {
-        snprintf(cursor_arg, sizeof(cursor_arg), "-c ");
+    if (mode != CAPTURE_MODE_SCREEN) {
+        if (mode == CAPTURE_MODE_WINDOW)
+            g_printerr("Window geometry is unavailable; select the window region manually.\n");
+        char *args[] = { "slurp", "-d", "-b", "#00008033", "-c", "#000080ff",
+                         "-s", "#ffffff22", NULL };
+        int status = 0;
+        if (!g_spawn_sync(NULL, args, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL,
+                          &geom, NULL, &status, NULL) ||
+            !g_spawn_check_wait_status(status, NULL) || !geom || !*g_strstrip(geom))
+            goto cleanup;
     }
-
-    if (mode == CAPTURE_MODE_REGION || mode == CAPTURE_MODE_WINDOW) {
-        /* Run slurp with Windows 95 cyan/navy highlights */
-        const char *slurp_cmd = "slurp -d -b \"#00008033\" -c \"#000080ff\" -s \"#ffffff22\"";
-        FILE *sfp = popen(slurp_cmd, "r");
-        if (!sfp) return -1;
-        char geom[128] = "";
-        if (fgets(geom, sizeof(geom), sfp)) {
-            geom[strcspn(geom, "\r\n")] = '\0';
-        }
-        int s_status = pclose(sfp);
-        if (WEXITSTATUS(s_status) != 0 || geom[0] == '\0') {
-            /* User pressed Escape or cancelled */
-            return -1;
-        }
-
-        char grim_cmd[1536];
-        snprintf(grim_cmd, sizeof(grim_cmd), "grim %s-g \"%s\" \"%s\"", cursor_arg, geom, target_file);
-        int g_ret = system(grim_cmd);
-        if (g_ret != 0 || !g_file_test(target_file, G_FILE_TEST_EXISTS)) {
-            return -1;
-        }
-    } else {
-        /* Full Screen / Monitor: query active output or prompt if multiple */
-        char grim_cmd[1536];
-        snprintf(grim_cmd, sizeof(grim_cmd), "grim %s\"%s\"", cursor_arg, target_file);
-        int g_ret = system(grim_cmd);
-        if (g_ret != 0 || !g_file_test(target_file, G_FILE_TEST_EXISTS)) {
-            return -1;
-        }
-    }
-
-    /* Clipboard Copy */
-    if (copy_clipboard) {
-        char wl_cmd[1536];
-        snprintf(wl_cmd, sizeof(wl_cmd), "wl-copy -t image/png < \"%s\"", target_file);
-        chicago_spawn_command(wl_cmd);
-    }
-
-    /* Shutter sound & notification */
-    play_shutter_sound();
-    send_capture_notification(target_file);
-
-    /* Open in Swappy if requested */
+    const char *args[8] = { "grim" };
+    int n = 1;
+    if (include_cursor) args[n++] = "-c";
+    if (geom) { args[n++] = "-g"; args[n++] = geom; }
+    args[n++] = target_file;
+    args[n] = NULL;
+    if (!capture_command(args, NULL)) goto cleanup;
+    if (copy_clipboard && !copy_capture(target_file)) goto cleanup;
     if (open_swappy) {
-        char swap_cmd[1536];
-        snprintf(swap_cmd, sizeof(swap_cmd), "swappy -f \"%s\" &", target_file);
-        chicago_spawn_command(swap_cmd);
+        const char *edit[] = { "swappy", "-f", target_file, NULL };
+        if (temp_path) {
+            if (!capture_command(edit, NULL)) goto cleanup;
+        } else {
+            chicago_spawn_argv(edit);
+        }
     }
-
-    if (out_path_buf && out_path_len > 0) {
-        g_strlcpy(out_path_buf, target_file, out_path_len);
+    play_shutter_sound();
+    const char *message = save_disk ? (copy_clipboard ? "Saved and copied to clipboard" : "Saved to disk")
+                                    : "Copied to clipboard";
+    const char *notify[] = { "notify-send", "-a", "Capture Tool", "Screenshot Captured", message, NULL };
+    chicago_spawn_argv(notify);
+    if (out_path_buf && out_path_len) {
+        /* Temporary paths are intentionally not exposed after deletion. */
+        g_strlcpy(out_path_buf, save_disk ? target_file : "", out_path_len);
     }
-
-    return 0;
+    ok = TRUE;
+cleanup:
+    if (temp_path || !ok) unlink(target_file);
+    g_free(temp_path);
+    g_free(geom);
+    return ok ? 0 : -1;
 }
 
 /* =========================================================================
@@ -333,7 +331,7 @@ static void create_interactive_pill(void) {
     g_signal_connect(g_cap.pill_btn_screen, "clicked", G_CALLBACK(on_pill_action_clicked), GINT_TO_POINTER(CAPTURE_MODE_SCREEN));
     gtk_box_pack_start(GTK_BOX(hbox), g_cap.pill_btn_screen, FALSE, FALSE, 0);
 
-    g_cap.pill_btn_window = gtk_button_new_with_label("Window (W)");
+    g_cap.pill_btn_window = gtk_button_new_with_label("Window Region (W)");
     gtk_style_context_add_class(gtk_widget_get_style_context(g_cap.pill_btn_window), "pill-btn");
     gtk_widget_set_tooltip_text(g_cap.pill_btn_window, "Click to select and capture a specific window");
     g_signal_connect(g_cap.pill_btn_window, "clicked", G_CALLBACK(on_pill_action_clicked), GINT_TO_POINTER(CAPTURE_MODE_WINDOW));
@@ -446,10 +444,8 @@ static void on_app_new_snip_clicked(GtkButton *btn, gpointer data) {
 static void on_app_copy_clicked(GtkButton *btn, gpointer data) {
     (void)btn; (void)data;
     if (g_cap.last_captured_path[0] && g_file_test(g_cap.last_captured_path, G_FILE_TEST_EXISTS)) {
-        char cmd[1536];
-        snprintf(cmd, sizeof(cmd), "wl-copy -t image/png < \"%s\"", g_cap.last_captured_path);
-        chicago_spawn_command(cmd);
-        gtk_label_set_text(GTK_LABEL(g_cap.app_status_label), "Copied to clipboard!");
+        if (copy_capture(g_cap.last_captured_path))
+            gtk_label_set_text(GTK_LABEL(g_cap.app_status_label), "Copied to clipboard!");
     }
 }
 
@@ -488,9 +484,8 @@ static void on_app_save_as_clicked(GtkButton *btn, gpointer data) {
 static void on_app_annotate_clicked(GtkButton *btn, gpointer data) {
     (void)btn; (void)data;
     if (g_cap.last_captured_path[0] && g_file_test(g_cap.last_captured_path, G_FILE_TEST_EXISTS)) {
-        char cmd[1536];
-        snprintf(cmd, sizeof(cmd), "swappy -f \"%s\" &", g_cap.last_captured_path);
-        chicago_spawn_command(cmd);
+        const char *args[] = { "swappy", "-f", g_cap.last_captured_path, NULL };
+        chicago_spawn_argv(args);
     }
 }
 
@@ -498,9 +493,8 @@ static void on_app_open_folder_clicked(GtkButton *btn, gpointer data) {
     (void)btn; (void)data;
     char dir[512];
     get_default_screenshots_dir(dir, sizeof(dir));
-    char cmd[1024];
-    snprintf(cmd, sizeof(cmd), "thunar \"%s\" &", dir);
-    chicago_spawn_command(cmd);
+    const char *args[] = { "thunar", dir, NULL };
+    chicago_spawn_argv(args);
 }
 
 static void create_standalone_app_window(void) {
@@ -568,7 +562,7 @@ static void create_standalone_app_window(void) {
     g_cap.app_mode_combo = gtk_combo_box_text_new();
     gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_cap.app_mode_combo), "Rectangular Region");
     gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_cap.app_mode_combo), "Full Screen");
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_cap.app_mode_combo), "Window");
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_cap.app_mode_combo), "Window region (manual)");
     gtk_combo_box_set_active(GTK_COMBO_BOX(g_cap.app_mode_combo), 0);
     gtk_box_pack_start(GTK_BOX(toolbar), g_cap.app_mode_combo, FALSE, FALSE, 0);
 
@@ -672,7 +666,7 @@ static void print_usage(const char *prog) {
     printf("  -i, --interactive      Launch GNOME-style floating interactive capture pill bar\n");
     printf("  -s, --snip             Instant interactive rectangular region snip\n");
     printf("  -f, --full             Instant full-screen capture\n");
-    printf("  -w, --window           Instant window snip\n");
+    printf("  -w, --window           Select a window region manually (region fallback)\n");
     printf("  -e, --edit             Capture region and open directly in Swappy editor\n");
     printf("  -c, --clipboard-only   Copy capture to clipboard only (do not save to file)\n");
     printf("  -d, --delay <seconds>  Delay capture by N seconds (default: 0)\n");

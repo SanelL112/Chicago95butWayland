@@ -3,12 +3,12 @@
 # Supports standalone DRM/GDM session, --nested window mode, and --headless test mode.
 set -euo pipefail
 
-REPO_DIR="$HOME/chicago-wayland"
-RUNTIME_DIR="$HOME/.local/share/chicago-wayland/runtime"
-CONFIG_BASE="$HOME/.config/chicago-wayland"
+REPO_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+export CHICAGO_REPO_DIR="$REPO_DIR"
+RUNTIME_DIR="${CHICAGO_RUNTIME_DIR:-$HOME/.local/share/chicago-wayland/runtime}"
+CONFIG_BASE="${XDG_CONFIG_HOME:-$HOME/.config}/chicago-wayland"
 LABWC_CFG_DIR="$CONFIG_BASE/labwc"
-STATE_DIR="$HOME/.local/state/chicago-wayland"
-BACKUP_DIR="$STATE_DIR/gtk-backup"
+source "$REPO_DIR/scripts/session-settings.sh"
 
 MODE="session"
 STARTUP_CMD=""
@@ -24,6 +24,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --startup|-s)
+            [[ $# -ge 2 ]] || { echo "--startup requires a command" >&2; exit 2; }
             STARTUP_CMD="$2"
             shift 2
             ;;
@@ -57,66 +58,22 @@ if [[ ! -d "$LABWC_CFG_DIR" ]]; then
     LABWC_CFG_DIR="$REPO_DIR/config/labwc"
 fi
 
-restore_gtk_configs() {
-    if [[ -f "$STATE_DIR/gtk-swapped.lock" ]]; then
-        for ver in gtk-3.0 gtk-4.0; do
-            for f in settings.ini gtk.css; do
-                if [[ -f "$BACKUP_DIR/$ver/$f" ]]; then
-                    cp -f "$BACKUP_DIR/$ver/$f" "$HOME/.config/$ver/$f"
-                fi
-            done
-        done
-        rm -f "$STATE_DIR/gtk-swapped.lock"
-    fi
-    if [[ -x "$STATE_DIR/saved_gsettings.sh" ]]; then
-        "$STATE_DIR/saved_gsettings.sh" 2>/dev/null || true
-    fi
-}
-
-apply_session_gtk_configs() {
-    mkdir -p "$BACKUP_DIR/gtk-3.0" "$BACKUP_DIR/gtk-4.0" "$STATE_DIR"
-    if [[ ! -f "$STATE_DIR/gtk-swapped.lock" ]]; then
-        for ver in gtk-3.0 gtk-4.0; do
-            mkdir -p "$HOME/.config/$ver"
-            for f in settings.ini gtk.css; do
-                if [[ -f "$HOME/.config/$ver/$f" ]]; then
-                    cp -f "$HOME/.config/$ver/$f" "$BACKUP_DIR/$ver/$f"
-                fi
-            done
-            cp -f "$REPO_DIR/config/gtk/settings.ini" "$HOME/.config/$ver/settings.ini"
-            cp -f "$REPO_DIR/config/gtk/gtk-win95-override.css" "$HOME/.config/$ver/gtk.css"
-        done
-        touch "$STATE_DIR/gtk-swapped.lock"
-    fi
-    if command -v gsettings >/dev/null 2>&1; then
-        CUR_THEME=$(gsettings get org.gnome.desktop.interface gtk-theme 2>/dev/null || echo "")
-        if [[ "$CUR_THEME" != "'Chicago95'" && -n "$CUR_THEME" ]]; then
-            cat << EOF > "$STATE_DIR/saved_gsettings.sh"
-#!/usr/bin/env bash
-gsettings set org.gnome.desktop.interface gtk-theme $(gsettings get org.gnome.desktop.interface gtk-theme)
-gsettings set org.gnome.desktop.interface icon-theme $(gsettings get org.gnome.desktop.interface icon-theme)
-gsettings set org.gnome.desktop.interface cursor-theme $(gsettings get org.gnome.desktop.interface cursor-theme)
-gsettings set org.gnome.desktop.interface color-scheme $(gsettings get org.gnome.desktop.interface color-scheme)
-gsettings set org.gnome.desktop.interface font-name $(gsettings get org.gnome.desktop.interface font-name)
-EOF
-            chmod +x "$STATE_DIR/saved_gsettings.sh"
-        fi
-        gsettings set org.gnome.desktop.interface gtk-theme 'Chicago95' 2>/dev/null || true
-        gsettings set org.gnome.desktop.interface icon-theme 'Chicago95' 2>/dev/null || true
-        gsettings set org.gnome.desktop.interface cursor-theme 'Chicago95_Cursor_Black' 2>/dev/null || true
-        gsettings set org.gnome.desktop.interface color-scheme 'default' 2>/dev/null || true
-        gsettings set org.gnome.desktop.interface font-name 'Helvetica 8' 2>/dev/null || true
-        gsettings set org.gnome.desktop.wm.preferences button-layout 'icon:minimize,maximize,close' 2>/dev/null || true
-    fi
-}
-
 if [[ "$MODE" == "session" ]]; then
     export XDG_CURRENT_DESKTOP="Chicago95:wlroots"
     export XDG_SESSION_DESKTOP="chicago-wayland"
     export XDG_SESSION_TYPE="wayland"
     export CHICAGO_NESTED="0"
+    mkdir -p "$STATE_DIR"
+    exec 9>"$STATE_DIR/session.lock"
+    if ! flock -n 9; then
+        echo 'Another standalone Chicago-Wayland session is active.' >&2
+        exit 1
+    fi
+    trap restore_gtk_configs EXIT
+    trap '[[ -z "${COMPOSITOR_PID:-}" ]] || kill "$COMPOSITOR_PID" 2>/dev/null || true; exit 130' INT
+    trap '[[ -z "${COMPOSITOR_PID:-}" ]] || kill "$COMPOSITOR_PID" 2>/dev/null || true; exit 143' TERM
+    trap '[[ -z "${COMPOSITOR_PID:-}" ]] || kill "$COMPOSITOR_PID" 2>/dev/null || true; exit 129' HUP
     apply_session_gtk_configs
-    trap restore_gtk_configs EXIT INT TERM HUP
 elif [[ "$MODE" == "nested" ]]; then
     export CHICAGO_NESTED="1"
 elif [[ "$MODE" == "headless" ]]; then
@@ -132,7 +89,9 @@ if [[ -n "$STARTUP_CMD" ]]; then
 fi
 
 if [[ "$MODE" == "session" ]]; then
-    labwc "${LABWC_ARGS[@]}"
+    labwc "${LABWC_ARGS[@]}" 9>&- &
+    COMPOSITOR_PID=$!
+    wait "$COMPOSITOR_PID"
 else
     exec labwc "${LABWC_ARGS[@]}"
 fi

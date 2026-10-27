@@ -10,9 +10,14 @@
 #include <string.h>
 #include <stdio.h>
 #include <sys/stat.h>
+#include <sys/file.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <signal.h>
+#include <errno.h>
 
 /*
- * Authentic Windows 95 4-Color 3D Bevel & Pixel-Crisp Helvetica 8pt CSS
+ * Authentic Windows 95 4-Color 3D Bevel & Pixel-Crisp W95FA (MS Sans Serif) 8pt CSS
  * Preserves inset box-shadow bevels (#ffffff, #dfdfdf, #808080, #000000).
  */
 static const char *CHICAGO95_CORE_CSS =
@@ -20,7 +25,7 @@ static const char *CHICAGO95_CORE_CSS =
     "  border-radius: 0px;\n"
     "  text-shadow: none;\n"
     "  -gtk-icon-shadow: none;\n"
-    "  font-family: 'Helvetica', 'Microsoft Sans Serif', 'Liberation Sans', Sans;\n"
+    "  font-family: 'W95FA', 'MS Sans Serif', 'Microsoft Sans Serif', Sans;\n"
     "  font-size: 8pt;\n"
     "}\n"
     "window.chicago-taskbar {\n"
@@ -298,7 +303,7 @@ static inline void chicago_apply_theme(void) {
                      "gtk-icon-theme-name", "Chicago95",
                      "gtk-cursor-theme-name", "Chicago95_Cursor_Black",
                      "gtk-application-prefer-dark-theme", FALSE,
-                     "gtk-font-name", "Helvetica 8",
+                     "gtk-font-name", "W95FA 8",
                      "gtk-enable-animations", FALSE,
                      NULL);
     }
@@ -323,6 +328,30 @@ static inline void chicago_apply_theme(void) {
             GTK_STYLE_PROVIDER_PRIORITY_USER + 200);
     }
     g_object_unref(provider);
+}
+
+/* One instance per Wayland display. Never terminate another session's shell. */
+static inline int chicago_single_instance_lock(const char *app_name) {
+    const char *runtime_dir = g_get_user_runtime_dir();
+    const char *display = g_getenv("WAYLAND_DISPLAY");
+    char *hash = g_compute_checksum_for_string(G_CHECKSUM_SHA256,
+                                              display ? display : "default", -1);
+    char *path = g_strdup_printf("%s/%s-%s.lock", runtime_dir, app_name, hash);
+    int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+    g_free(path);
+    g_free(hash);
+    if (fd < 0) {
+        g_warning("Cannot open %s instance lock: %s", app_name, strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    if (flock(fd, LOCK_EX | LOCK_NB) < 0) {
+        int saved_errno = errno;
+        close(fd);
+        if (saved_errno == EWOULDBLOCK || saved_errno == EAGAIN) exit(EXIT_SUCCESS);
+        g_warning("Cannot lock %s: %s", app_name, strerror(saved_errno));
+        exit(EXIT_FAILURE);
+    }
+    return fd; /* Held for the process lifetime; CLOEXEC prevents child inheritance. */
 }
 
 static inline void chicago_draw_bevel(cairo_t *cr, double x, double y, double w, double h, gboolean raised) {
@@ -568,7 +597,7 @@ static inline GdkPixbuf *chicago_draw_power_profile_pixbuf(const char *profile, 
 
 /* Dynamic Chicago95 Battery Icon (0/20/40/60/80/100% + Charging Bolt Overlay) */
 static inline GdkPixbuf *chicago_load_battery_pixbuf(int pct, gboolean charging, int size) {
-    const char *icon_name = "gpm-battery-100";
+    const char *icon_name;
     if (pct <= 10)      icon_name = "gpm-battery-000";
     else if (pct <= 30) icon_name = "gpm-battery-020";
     else if (pct <= 50) icon_name = "gpm-battery-040";
@@ -658,6 +687,42 @@ static inline GdkPixbuf *chicago_load_mic_pixbuf(gboolean muted, int size) {
     GdkPixbuf *out = gdk_pixbuf_get_from_surface(surf, 0, 0, size, size);
     cairo_surface_destroy(surf);
     return out;
+}
+
+/* Use argv for external data; keep shell commands only for intentional scripts. */
+static inline gboolean chicago_spawn_argv(const char *const *argv) {
+    GError *err = NULL;
+    GSubprocess *proc = g_subprocess_newv(argv, G_SUBPROCESS_FLAGS_NONE, &err);
+    if (!proc) {
+        g_warning("Cannot start %s: %s", argv[0], err->message);
+        g_clear_error(&err);
+        return FALSE;
+    }
+    g_object_unref(proc);
+    return TRUE;
+}
+
+/* nmcli terse output escapes colons and backslashes. Always return four fields. */
+static inline char **chicago_parse_wifi_row(const char *line) {
+    char **fields = g_new0(char *, 5);
+    const char *p = line;
+    for (int i = 0; i < 4; i++) {
+        GString *field = g_string_new("");
+        while (*p && *p != ':') {
+            if (*p == '\\' && p[1]) p++;
+            g_string_append_c(field, *p++);
+        }
+        fields[i] = g_string_free(field, FALSE);
+        if (*p == ':') p++;
+    }
+    return fields;
+}
+
+static inline void chicago_wifi_connect(const char *ssid, const char *password) {
+    const char *args[] = { "nmcli", "device", "wifi", "connect", ssid,
+                           password && *password ? "password" : NULL,
+                           password, NULL };
+    chicago_spawn_argv(args);
 }
 
 static inline void chicago_spawn_command(const char *cmd) {
@@ -1438,9 +1503,8 @@ static inline void on_ctx_app_open_location(GtkWidget *btn, gpointer data) {
     ChicagoAppMenuCtx *ctx = (ChicagoAppMenuCtx *)data;
     if (ctx->desktop_path && *ctx->desktop_path) {
         char *dir = g_path_get_dirname(ctx->desktop_path);
-        char cmd[1024];
-        snprintf(cmd, sizeof(cmd), "thunar \"%s\"", dir);
-        chicago_spawn_command(cmd);
+        const char *args[] = { "thunar", dir, NULL };
+        chicago_spawn_argv(args);
         g_free(dir);
     } else {
         chicago_spawn_command("thunar /usr/share/applications");

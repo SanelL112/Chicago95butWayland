@@ -1,0 +1,142 @@
+#!/usr/bin/python3
+"""Power-profile CLI and event-driven labwc panel refresh policy."""
+import argparse
+import fcntl
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import gi
+gi.require_version('Gio', '2.0')
+gi.require_version('GLib', '2.0')
+from gi.repository import Gio, GLib
+
+NAME = 'net.hadess.PowerProfiles'
+OBJECT = '/net/hadess/PowerProfiles'
+PROFILES = ('power-saver', 'balanced', 'performance')
+
+
+def proxy(name=NAME, path=OBJECT, interface=NAME):
+    obj = Gio.DBusProxy.new_for_bus_sync(Gio.BusType.SYSTEM, Gio.DBusProxyFlags.NONE,
+                                        None, name, path, interface, None)
+    obj.set_default_timeout(5000)
+    return obj
+
+
+def selected_profile(ppd):
+    value = ppd.get_cached_property('ActiveProfile')
+    if value is None:
+        raise RuntimeError('Power Profiles service is unavailable')
+    return value.unpack()
+
+
+def next_profile(current, available=PROFILES):
+    order = [p for p in PROFILES if p in available]
+    if not order:
+        raise RuntimeError('No power profiles are available')
+    return order[(order.index(current) + 1) % len(order)] if current in order else order[0]
+
+
+def panel_change(outputs, saving):
+    """Change only an enabled internal panel, preserving its current resolution/layout."""
+    for output in outputs:
+        if not output['name'].startswith('eDP-') or not output.get('enabled'):
+            continue
+        modes = output.get('modes', [])
+        current = next((m for m in modes if m.get('current')), None)
+        if not current:
+            continue
+        same_size = [m for m in modes if (m['width'], m['height']) == (current['width'], current['height'])]
+        target = min(same_size, key=lambda m: m['refresh']) if saving else next(
+            (m for m in same_size if m.get('preferred')), max(same_size, key=lambda m: m['refresh']))
+        if abs(target['refresh'] - current['refresh']) < 0.02:
+            return None
+        return ['wlr-randr', '--output', output['name'], '--mode',
+                f"{target['width']}x{target['height']}@{target['refresh']:.3f}Hz"]
+    return None
+
+
+def apply_display(ppd, upower, dry_run=False):
+    if os.environ.get('CHICAGO_NESTED') == '1':
+        return
+    battery = upower.get_cached_property('OnBattery')
+    saving = selected_profile(ppd) == 'power-saver' or bool(battery and battery.unpack())
+    outputs = json.loads(subprocess.check_output(['wlr-randr', '--json'], text=True, timeout=5))
+    command = panel_change(outputs, saving)
+    if command:
+        if dry_run:
+            print(json.dumps(command))
+        else:
+            subprocess.run(command, check=True, timeout=8)
+            print('Panel refresh policy applied: ' + command[-1], flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=['get', 'set', 'cycle', 'watch', 'apply-display'])
+    parser.add_argument('profile', nargs='?', choices=PROFILES)
+    parser.add_argument('--dry-run', action='store_true')
+    args = parser.parse_args()
+    ppd = proxy()
+    if args.action == 'get':
+        print(selected_profile(ppd))
+        return
+    if args.action in ('set', 'cycle'):
+        profile = args.profile
+        if args.action == 'cycle':
+            profiles = ppd.get_cached_property('Profiles')
+            available = [p['Profile'] for p in profiles.unpack()] if profiles else PROFILES
+            profile = next_profile(selected_profile(ppd), available)
+        if not profile:
+            parser.error('set requires a profile')
+        ppd.call_sync('org.freedesktop.DBus.Properties.Set',
+                      GLib.Variant('(ssv)', (NAME, 'ActiveProfile', GLib.Variant('s', profile))),
+                      Gio.DBusCallFlags.NONE, 5000, None)
+        return
+    upower = proxy('org.freedesktop.UPower', '/org/freedesktop/UPower', 'org.freedesktop.UPower')
+    if args.action == 'apply-display':
+        apply_display(ppd, upower, args.dry_run)
+        return
+    if os.environ.get('CHICAGO_NESTED') == '1':
+        return
+    runtime = Path(os.environ['XDG_RUNTIME_DIR'])
+    # One watcher for this compositor; a stale previous session cannot hold its lock.
+    display = os.environ.get('WAYLAND_DISPLAY', '').replace('/', '_')
+    with (runtime / ('chicago-power-' + display + '.lock')).open('w') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        pending = [None]
+        def update():
+            pending[0] = None
+            try:
+                apply_display(ppd, upower)
+            except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as error:
+                print('Chicago power display policy: ' + str(error), file=sys.stderr, flush=True)
+            return False
+        def changed(*_):
+            if pending[0] is None:
+                pending[0] = GLib.timeout_add(150, update)
+        ppd.connect('g-properties-changed', changed)
+        ppd.connect('notify::g-name-owner', changed)
+        upower.connect('g-properties-changed', changed)
+        changed()
+        # Exit if this compositor disappears, even if the session bus survives logout.
+        socket = runtime / os.environ['WAYLAND_DISPLAY']
+        monitor = Gio.File.new_for_path(str(socket)).monitor_file(Gio.FileMonitorFlags.NONE, None)
+        loop = GLib.MainLoop()
+        def socket_changed(_monitor, _file, _other, event):
+            if event in (Gio.FileMonitorEvent.DELETED, Gio.FileMonitorEvent.MOVED_OUT):
+                loop.quit()
+        monitor.connect('changed', socket_changed)
+        loop.run()
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (GLib.Error, OSError, RuntimeError, subprocess.SubprocessError, ValueError) as error:
+        print('Chicago power: ' + str(error), file=sys.stderr)
+        sys.exit(1)

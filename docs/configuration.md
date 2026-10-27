@@ -29,7 +29,7 @@ All **Chicago-Wayland** session configuration files are stored in `~/.config/chi
 | `Super + E` | Open **Windows Explorer** (File Manager) |
 | `Super + C` | Open **Control Panel** (`chicago-control-panel`) |
 | `Super + Return` | Open **MS-DOS Prompt** (`kitty`) |
-| `Super + L` | **Lock Workstation** (`swaylock -f -c 008080`) |
+| `Super + L` | **Lock Workstation** (`chicago-lock`, backed by swaylock) |
 | `Alt + F4` | Close active window |
 | `Alt + Tab` / `Alt + Shift + Tab` | Classic Windows 95 **Window Switcher** |
 | `Alt + Space` | Open active window's **Titlebar System Menu** (Restore, Move, Size, Minimize, Maximize, Close) |

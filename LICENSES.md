@@ -28,3 +28,12 @@ All custom source code (`src/custom-components/`), scripts (`install.sh`, `unins
 - **swaybg / swayidle / swaylock / mako / kanshi**: MIT
 
 No proprietary Microsoft Windows binaries or unlicensed copyrighted DLL/EXE resources are bundled.
+
+
+### 4. gtk-session-lock (custom lock-screen surfaces)
+- Upstream: https://github.com/Cu3PO42/gtk-session-lock
+- Pinned revision: `b9ddb2792b613d14622acada73c64f16a2635b40` (0.2.0)
+- License: GPLv3, with some source files additionally available under MIT.
+- License texts and build/source provenance: `third_party/gtk-session-lock/`.
+- The bootstrap script retains the corresponding unmodified library source in
+  the user dependency directory. The generated library in `lib/` is a build artifact.

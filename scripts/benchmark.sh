@@ -122,67 +122,59 @@ def sample_pids(pids, num_samples=5, interval=2.0):
         'battery_samples': bat_samples,
     }
 
+sys.path.insert(0, str(repo_dir / 'scripts'))
+from isolated import isolated_session
+try:
+    with isolated_session():
+        pass
+except PermissionError as exc:
+    print(f'[SKIP] Cannot create private compositor socket: {exc}', file=sys.stderr)
+    sys.exit(77)
+
 print("[1/3] Measuring running Hyprland + Quickshell (qs) + Xwayland baseline...")
 hypr_pids = find_pids_by_names({'Hyprland', 'qs', 'Xwayland'})
 hypr_metrics = sample_pids(hypr_pids, num_samples=5, interval=2.0)
 
-print("[2/3] Measuring Chicago-Wayland Default Stack (labwc + chicago-desktop + chicago-taskbar)...")
-env = os.environ.copy()
-env['WLR_BACKENDS'] = 'headless'
-env['WLR_LIBINPUT_NO_DEVICES'] = '1'
-env['CHICAGO_NESTED'] = '1'
-env.pop('WAYLAND_DISPLAY', None)
-env.pop('DISPLAY', None)
+# Limit all Chicago metrics and cleanup to the private child process group.
+sys.path.insert(0, str(repo_dir / 'scripts'))
+from isolated import isolated_session, stop_group
 
-t_launch = time.monotonic()
-proc = subprocess.Popen(
-    [str(repo_dir / 'bin' / 'start-chicago-wayland'), '--headless'],
-    env=env,
-    stdout=subprocess.DEVNULL,
-    stderr=subprocess.DEVNULL,
-    preexec_fn=os.setsid
-)
+def variant(panel):
+    try:
+        with isolated_session() as env:
+            env['CHICAGO_PANEL'] = panel
+            proc = subprocess.Popen(
+                ['dbus-run-session', '--', str(repo_dir / 'bin/start-chicago-wayland'), '--headless'],
+                env=env, stdout=subprocess.DEVNULL, start_new_session=True)
+            try:
+                launched = time.monotonic()
+                expected = {'labwc', 'chicago-desktop', panel}
+                def owned_pids():
+                    return [pid for pid in find_pids_by_names(expected)
+                            if os.getpgid(pid) == proc.pid]
+                for _ in range(100):
+                    if proc.poll() is not None:
+                        raise RuntimeError('Isolated compositor exited before startup')
+                    if len(owned_pids()) >= 3:
+                        break
+                    time.sleep(0.05)
+                else:
+                    raise RuntimeError('Isolated shell components did not start')
+                startup = (time.monotonic() - launched) * 1000
+                time.sleep(1.5)
+                metrics = sample_pids(owned_pids())
+                metrics['startup_time_ms'] = round(startup, 1)
+                return metrics
+            finally:
+                stop_group(proc)
+    except PermissionError as exc:
+        print(f'[SKIP] Cannot create private compositor socket: {exc}', file=sys.stderr)
+        sys.exit(77)
 
-# Wait for chicago-taskbar and chicago-desktop to map
-startup_ms = None
-for _ in range(100):
-    pids = find_pids_by_names({'labwc', 'chicago-desktop', 'chicago-taskbar'})
-    if len(pids) >= 3:
-        startup_ms = round((time.monotonic() - t_launch) * 1000.0, 1)
-        break
-    time.sleep(0.05)
-
-time.sleep(1.5) # Let startup settle before idle measurement
-cw_pids = find_pids_by_names({'labwc', 'chicago-desktop', 'chicago-taskbar'})
-cw_metrics = sample_pids(cw_pids, num_samples=5, interval=2.0)
-cw_metrics['startup_time_ms'] = startup_ms
-
-os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-try:
-    proc.wait(timeout=3)
-except Exception:
-    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-time.sleep(0.5)
-
-print("[3/3] Measuring Chicago-Wayland sfwbar Variant (labwc + chicago-desktop + sfwbar)...")
-env_sfw = env.copy()
-env_sfw['CHICAGO_PANEL'] = 'sfwbar'
-proc_sfw = subprocess.Popen(
-    [str(repo_dir / 'bin' / 'start-chicago-wayland'), '--headless'],
-    env=env_sfw,
-    stdout=subprocess.DEVNULL,
-    stderr=subprocess.DEVNULL,
-    preexec_fn=os.setsid
-)
-time.sleep(2.0)
-sfw_pids = find_pids_by_names({'labwc', 'chicago-desktop', 'sfwbar'})
-sfw_metrics = sample_pids(sfw_pids, num_samples=5, interval=2.0)
-
-os.killpg(os.getpgid(proc_sfw.pid), signal.SIGTERM)
-try:
-    proc_sfw.wait(timeout=3)
-except Exception:
-    os.killpg(os.getpgid(proc_sfw.pid), signal.SIGKILL)
+print("[2/3] Measuring isolated Chicago-Wayland default stack...")
+cw_metrics = variant('chicago-taskbar')
+print("[3/3] Measuring isolated sfwbar variant...")
+sfw_metrics = variant('sfwbar')
 
 report = {
     'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S%z'),

@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../include/chicago_common.h"
+#include "../include/chicago_power.h"
 #include "wlr-foreign-toplevel-management-unstable-v1-client-protocol.h"
 
 #define MAX_BAR_MONITORS 8
@@ -144,6 +145,7 @@ typedef struct {
 static TaskbarApp g_tb;
 
 static void hide_all_popups(void);
+static void refresh_control_center_contents(void);
 static void set_start_menu_visible(gboolean visible, GdkMonitor *target_mon);
 static void update_tray_indicators(gboolean query_audio);
 static void toggle_control_center_popup(GdkMonitor *mon, int initial_tab);
@@ -247,21 +249,8 @@ static void read_battery_sysfs(int *out_pct, gboolean *out_charging, double *out
     }
 }
 
-static void read_power_profile_sysfs(char *out_prof, size_t prof_sz) {
-    if (!out_prof || prof_sz == 0) return;
-    g_strlcpy(out_prof, "balanced", prof_sz);
-    char *pf = NULL;
-    if (g_file_get_contents("/sys/firmware/acpi/platform_profile", &pf, NULL, NULL) && pf) {
-        g_strstrip(pf);
-        if (strcmp(pf, "low-power") == 0 || strcmp(pf, "power-saver") == 0 || strcmp(pf, "quiet") == 0) {
-            g_strlcpy(out_prof, "power-saver", prof_sz);
-        } else if (strcmp(pf, "performance") == 0) {
-            g_strlcpy(out_prof, "performance", prof_sz);
-        } else {
-            g_strlcpy(out_prof, "balanced", prof_sz);
-        }
-        g_free(pf);
-    }
+static void read_power_profile(char *out_prof, size_t prof_sz) {
+    chicago_power_get(out_prof, prof_sz);
 }
 
 static void read_network_sysfs(gboolean *out_eth, gboolean *out_wifi, char *out_eth_dev, size_t ed_sz, char *out_wifi_dev, size_t wd_sz) {
@@ -354,34 +343,18 @@ static gboolean on_deferred_tray_refresh(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
-static void set_power_profile_with_governor_fix(const char *prof) {
-    if (!prof || !*prof) return;
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd),
-             "for g in /sys/devices/system/cpu/cpufreq/policy*/scaling_governor; do "
-             "[ -w \"$g\" ] && echo powersave > \"$g\" 2>/dev/null || true; "
-             "done; powerprofilesctl set %s", prof);
-    chicago_spawn_command(cmd);
-    g_timeout_add(300, on_deferred_tray_refresh, GINT_TO_POINTER(0));
+static void set_power_profile(const char *prof) {
+    chicago_power_set(prof);
 }
 
 static void cycle_power_profile(void) {
-    char script_path[512];
-    snprintf(script_path, sizeof(script_path), "%s/.config/hypr/scripts/cycle-power-profile.sh", g_get_home_dir());
-    if (g_file_test(script_path, G_FILE_TEST_IS_EXECUTABLE)) {
-        chicago_spawn_command(script_path);
-        g_timeout_add(350, on_deferred_tray_refresh, GINT_TO_POINTER(0));
-        return;
-    }
-    char cur[64];
-    read_power_profile_sysfs(cur, sizeof(cur));
-    if (strcmp(cur, "power-saver") == 0) {
-        set_power_profile_with_governor_fix("balanced");
-    } else if (strcmp(cur, "balanced") == 0) {
-        set_power_profile_with_governor_fix("performance");
-    } else {
-        set_power_profile_with_governor_fix("power-saver");
-    }
+    chicago_power_cycle();
+}
+
+static void on_power_profile_changed(GDBusProxy *proxy, GVariant *changed, const gchar * const *invalidated, gpointer data) {
+    (void)proxy; (void)changed; (void)invalidated; (void)data;
+    update_tray_indicators(FALSE);
+    refresh_control_center_contents();
 }
 
 /* =========================================================================
@@ -644,12 +617,16 @@ static void tl_handle_done(void *data, struct zwlr_foreign_toplevel_handle_v1 *h
 
 static void tl_handle_closed(void *data, struct zwlr_foreign_toplevel_handle_v1 *h) {
     ToplevelItem *item = (ToplevelItem *)data;
+    /* Menus hold borrowed item pointers; close them before freeing the item. */
+    chicago_close_context_menu();
     g_tb.toplevels = g_list_remove(g_tb.toplevels, item);
-    for (int i = 0; i < g_tb.bar_count; i++) {
+    for (int i = 0; i < MAX_BAR_MONITORS; i++) {
         if (item->buttons[i]) {
             gtk_widget_destroy(item->buttons[i]);
             item->buttons[i] = NULL;
         }
+        item->labels[i] = NULL;
+        item->icons[i] = NULL;
     }
     zwlr_foreign_toplevel_handle_v1_destroy(h);
     g_free(item->title);
@@ -1130,8 +1107,8 @@ static gboolean on_draw_start_banner(GtkWidget *widget, cairo_t *cr, gpointer da
         cairo_rotate(cr, -G_PI / 2.0);
         PangoLayout *layout = gtk_widget_create_pango_layout(widget, NULL);
         pango_layout_set_markup(layout,
-            "<span font_desc='Helvetica Bold 13' foreground='#ffffff'>Windows</span>"
-            "<span font_desc='Helvetica 13' foreground='#c0c0c0'> 95</span>", -1);
+            "<span font_desc='W95FA Bold 13' foreground='#ffffff'>Windows</span>"
+            "<span font_desc='W95FA 13' foreground='#c0c0c0'> 95</span>", -1);
         cairo_move_to(cr, 0, 0);
         pango_cairo_show_layout(cr, layout);
         g_object_unref(layout);
@@ -1322,7 +1299,7 @@ static void update_tray_indicators(gboolean query_audio) {
     read_battery_sysfs(&bat_pct, &bat_charging, &bat_watts, bat_status, sizeof(bat_status));
 
     char prof[64] = "balanced";
-    read_power_profile_sysfs(prof, sizeof(prof));
+    read_power_profile(prof, sizeof(prof));
 
     gboolean has_eth = FALSE, has_wifi = FALSE;
     char eth_dev[64] = "", wifi_dev[64] = "";
@@ -1516,13 +1493,28 @@ static void on_cc_toggle_caffeine_clicked(GtkButton *btn, gpointer data) {
     refresh_control_center_contents();
 }
 
+static void on_wifi_connect_complete(GObject *source, GAsyncResult *result, gpointer data) {
+    (void)data;
+    GError *error = NULL;
+    if (!g_subprocess_wait_check_finish(G_SUBPROCESS(source), result, &error)) {
+        /* Saved credentials/open networks connect directly; otherwise ask in the dialog. */
+        chicago_spawn_command("chicago-control-panel --network");
+        g_clear_error(&error);
+    }
+}
+
 static void on_wifi_connect_clicked(GtkButton *btn, gpointer data) {
     (void)btn;
     const char *ssid = (const char *)data;
     if (!ssid || !*ssid) return;
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd), "nmcli device wifi connect \"%s\" || chicago-control-panel --network", ssid);
-    chicago_spawn_command(cmd);
+    const char *args[] = { "nmcli", "device", "wifi", "connect", ssid, NULL };
+    GSubprocess *proc = g_subprocess_newv(args, G_SUBPROCESS_FLAGS_NONE, NULL);
+    if (proc) {
+        g_subprocess_wait_check_async(proc, NULL, on_wifi_connect_complete, NULL);
+        g_object_unref(proc);
+    } else {
+        chicago_spawn_command("chicago-control-panel --network");
+    }
     g_timeout_add(1500, on_deferred_cc_refresh, NULL);
 }
 
@@ -1565,7 +1557,7 @@ static void on_audio_sink_clicked(GtkButton *btn, gpointer data) {
 static void on_cc_set_profile_btn(GtkButton *btn, gpointer data) {
     (void)btn;
     const char *prof = (const char *)data;
-    set_power_profile_with_governor_fix(prof);
+    set_power_profile(prof);
     g_timeout_add(400, on_deferred_cc_refresh, NULL);
 }
 
@@ -1580,7 +1572,7 @@ static void refresh_control_center_contents(void) {
     read_battery_sysfs(&bat_pct, &bat_charging, &bat_watts, bat_status, sizeof(bat_status));
 
     char prof[64] = "balanced";
-    read_power_profile_sysfs(prof, sizeof(prof));
+    read_power_profile(prof, sizeof(prof));
 
     gboolean has_eth = FALSE, has_wifi = FALSE;
     char eth_dev[64] = "", wifi_dev[64] = "";
@@ -1666,7 +1658,7 @@ static void refresh_control_center_contents(void) {
             char **lines = g_strsplit(wifi_out, "\n", -1);
             int shown = 0;
             for (int i = 0; lines[i] && shown < 10; i++) {
-                char **parts = g_strsplit(lines[i], ":", 4);
+                char **parts = chicago_parse_wifi_row(lines[i]);
                 if (parts[0] && parts[1] && parts[1][0] != '\0') {
                     char row_lbl[256];
                     snprintf(row_lbl, sizeof(row_lbl), "%s %s (%s%%, %s)",
@@ -2739,7 +2731,108 @@ static void create_taskbar_for_monitor(GdkMonitor *mon) {
     gtk_widget_show_all(bi->bar_window);
 }
 
+static guint s_mon_rebuild_timer = 0;
+
+static void rebuild_all_taskbars(void) {
+    /* 1. Close any open popups so they don't hold invalid monitor surfaces */
+    set_start_menu_visible(FALSE, NULL);
+    if (g_tb.cc_popup && gtk_widget_get_visible(g_tb.cc_popup)) {
+        gtk_widget_hide(g_tb.cc_popup);
+    }
+    if (g_tb.cal_popup && gtk_widget_get_visible(g_tb.cal_popup)) {
+        gtk_widget_hide(g_tb.cal_popup);
+    }
+    chicago_close_context_menu();
+    g_tb.active_popup_monitor = NULL;
+
+    /* 2. Clear toplevel buttons on old bars */
+    for (GList *l = g_tb.toplevels; l; l = l->next) {
+        ToplevelItem *item = (ToplevelItem *)l->data;
+        for (int i = 0; i < MAX_BAR_MONITORS; i++) {
+            item->buttons[i] = NULL;
+            item->labels[i] = NULL;
+            item->icons[i] = NULL;
+        }
+    }
+
+    /* 3. Destroy all existing bar windows */
+    for (int i = 0; i < g_tb.bar_count; i++) {
+        if (g_tb.bars[i].bar_window) {
+            gtk_widget_destroy(g_tb.bars[i].bar_window);
+            g_tb.bars[i].bar_window = NULL;
+        }
+    }
+    memset(g_tb.bars, 0, sizeof(g_tb.bars));
+    g_tb.bar_count = 0;
+
+    /* 4. Re-query connected monitors and create bars */
+    GdkDisplay *gdk_dpy = gdk_display_get_default();
+    int n_mons = gdk_dpy ? gdk_display_get_n_monitors(gdk_dpy) : 0;
+    if (n_mons > 0) {
+        for (int i = 0; i < n_mons && i < MAX_BAR_MONITORS; i++) {
+            create_taskbar_for_monitor(gdk_display_get_monitor(gdk_dpy, i));
+        }
+    } else {
+        create_taskbar_for_monitor(NULL);
+    }
+
+    /* 5. Recreate toplevel buttons on all new bars */
+    for (GList *l = g_tb.toplevels; l; l = l->next) {
+        ToplevelItem *item = (ToplevelItem *)l->data;
+        for (int i = 0; i < g_tb.bar_count; i++) {
+            GtkWidget *btn = gtk_button_new();
+            gtk_style_context_add_class(gtk_widget_get_style_context(btn), "task-btn");
+            gtk_widget_add_events(btn, GDK_BUTTON_PRESS_MASK);
+            gtk_widget_set_size_request(btn, 150, 22);
+
+            GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+            GdkPixbuf *pb = chicago_load_icon(item->app_id ? item->app_id : "application-x-executable", 16);
+            GtkWidget *img = gtk_image_new_from_pixbuf(pb);
+            if (pb) g_object_unref(pb);
+
+            GtkWidget *lbl = gtk_label_new(item->title ? item->title : "Window");
+            gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
+            gtk_label_set_ellipsize(GTK_LABEL(lbl), PANGO_ELLIPSIZE_END);
+            gtk_label_set_max_width_chars(GTK_LABEL(lbl), 18);
+
+            gtk_box_pack_start(GTK_BOX(hbox), img, FALSE, FALSE, 1);
+            gtk_box_pack_start(GTK_BOX(hbox), lbl, TRUE, TRUE, 1);
+            gtk_container_add(GTK_CONTAINER(btn), hbox);
+
+            g_signal_connect(btn, "clicked", G_CALLBACK(on_task_btn_clicked), item);
+            g_signal_connect(btn, "button-press-event", G_CALLBACK(on_task_btn_press), item);
+
+            gtk_box_pack_start(GTK_BOX(g_tb.bars[i].task_box), btn, FALSE, FALSE, 1);
+            gtk_widget_show_all(btn);
+
+            item->buttons[i] = btn;
+            item->labels[i] = lbl;
+            item->icons[i] = img;
+        }
+        update_toplevel_widgets(item);
+    }
+
+    update_clock_labels();
+    update_tray_indicators(TRUE);
+}
+
+static gboolean on_monitors_changed_debounced(gpointer user_data) {
+    (void)user_data;
+    s_mon_rebuild_timer = 0;
+    rebuild_all_taskbars();
+    return G_SOURCE_REMOVE;
+}
+
+static void on_monitor_event(GdkDisplay *dpy, GdkMonitor *mon, gpointer user_data) {
+    (void)dpy; (void)mon; (void)user_data;
+    if (s_mon_rebuild_timer > 0) {
+        g_source_remove(s_mon_rebuild_timer);
+    }
+    s_mon_rebuild_timer = g_timeout_add(200, on_monitors_changed_debounced, NULL);
+}
+
 int main(int argc, char **argv) {
+    chicago_single_instance_lock("chicago-taskbar");
     gtk_init(&argc, &argv);
     chicago_apply_theme();
 
@@ -2758,6 +2851,13 @@ int main(int argc, char **argv) {
         create_taskbar_for_monitor(NULL);
     }
 
+    if (gdk_dpy) {
+        g_signal_connect(gdk_dpy, "monitor-added", G_CALLBACK(on_monitor_event), NULL);
+        g_signal_connect(gdk_dpy, "monitor-removed", G_CALLBACK(on_monitor_event), NULL);
+    }
+
+    GDBusProxy *power = chicago_power_connect();
+    if (power) g_signal_connect(power, "g-properties-changed", G_CALLBACK(on_power_profile_changed), NULL);
     update_clock_labels();
     update_tray_indicators(TRUE);
     schedule_next_minute_tick();

@@ -25,7 +25,7 @@ A core engineering goal of **Chicago-Wayland** is honest, transparent handling o
 | **Audio (PipeWire / WirePlumber)** | Uses running user `pipewire`, `wireplumber`, `pipewire-pulse` services; controlled via `wpctl` in taskbar tray popup, Control Panel, and media keys. | **Verified** |
 | **Clipboard (`wl-clipboard`)** | Native Wayland data-device + `<primarySelection>yes</primarySelection>` in `rc.xml`; verified with `wl-copy` / `wl-paste`. | **Verified** |
 | **Notifications (`mako`)** | Lightweight Wayland layer-shell notification daemon (`config/mako/config`) styled in classic Windows 95 `#ffffe1` tooltip yellow with 1px black border. | **Verified** |
-| **Screen Locking & Idle (`swaylock` / `swayidle`)** | Locks screen to `#008080` teal via `swaylock -f -c 008080` on `Super+L`, Start -> Lock Workstation, or 600s idle / before-sleep. | **Verified** |
+| **Screen Locking & Idle (`swaylock` / `swayidle`)** | Locks screen to `#008080` teal via `chicago-lock` (swaylock) on `Super+L`, Start -> Lock Workstation, or 600s idle / before-sleep. | **Requires live revalidation after security fixes** |
 | **Multi-Monitor & HiDPI (`kanshi` / `wlr-randr`)** | Pre-configured for the system's 3-monitor topology (`eDP-1` 1920×1200@59.95Hz at `0,0`, `DP-6` HP E22 G5 1920×1080@74.97Hz at `1920,0`, `DP-9` DELL P2222H 1920×1080@60Hz at `3840,0`). | **Verified** |
 | **XDG Desktop Portals** | Reuses `xdg-desktop-portal` + `xdg-desktop-portal-gtk` (file choosers) and `xdg-desktop-portal-wlr` (wlroots screen sharing). | **Verified** |
 

@@ -1,3 +1,10 @@
 src/custom-components/build/
 *.o
 *~
+
+__pycache__/
+
+/lib/*.so*
+/bin/chicago-lock-custom
+
+/bin/chicago-lock-face

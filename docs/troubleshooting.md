@@ -16,7 +16,7 @@ At any time, validate your installation and verify that Hyprland remains untouch
 By default, `./install.sh --user` installs the session user-locally to `~/.local/share/wayland-sessions/chicago-wayland.desktop` (which `uwsm select` / `uwsm start` detects automatically).
 Because GDM (`gdm.service`) only scans `/usr/share/wayland-sessions/`, run the following command once with `sudo` to add **Windows 95 (Chicago-Wayland)** to the GDM gear menu:
 ```bash
-sudo ~/chicago-wayland/install.sh --system-session
+~/chicago-wayland/install.sh --system-session
 ```
 
 ### Q2: How can I test Chicago-Wayland inside my current Hyprland session without logging out?

@@ -207,7 +207,7 @@
       <action name="ToggleAlwaysOnTop" />
     </keybind>
     <keybind key="W-S-p">
-      <action name="Execute" command="/home/sanellathiya/.config/hypr/scripts/cycle-power-profile.sh" />
+      <action name="Execute" command="chicago-power cycle" />
     </keybind>
     <keybind key="W-S-b">
       <action name="Execute" command="python3 /home/sanellathiya/.config/hypr/scripts/brightness-sync.py sync" />

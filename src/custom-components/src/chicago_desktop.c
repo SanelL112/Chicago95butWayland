@@ -69,7 +69,7 @@ typedef struct {
     GdkRGBA bg_color;
     char wallpaper_path[512];
     char wallpaper_mode[32]; /* "none", "tile", "center", "stretch" */
-    char icon_monitor[64];   /* "all", "primary", or connector name e.g. "eDP-1", "DP-6" */
+    char icon_monitor[64];   /* "all", "primary", or legacy GDK monitor model */
     GdkPixbuf *wallpaper_pb;
 
     GFileMonitor *desktop_monitor;
@@ -221,7 +221,11 @@ static void populate_icons(void) {
                 g_key_file_free(kf);
             } else {
                 gboolean is_dir = g_file_test(full_path, G_FILE_TEST_IS_DIR);
-                snprintf(cmd_buf, sizeof(cmd_buf), "thunar \"%s\" 2>/dev/null || xdg-open \"%s\"", full_path, full_path);
+                char *quoted = g_shell_quote(full_path);
+                char *open_cmd = g_strdup_printf("xdg-open %s", quoted);
+                g_strlcpy(cmd_buf, open_cmd, sizeof(cmd_buf));
+                g_free(open_cmd);
+                g_free(quoted);
                 add_desktop_icon(fname, is_dir ? "folder" : "text-x-generic", cmd_buf, col, row, FALSE);
                 row++;
                 if (row >= 7) { row = 0; col++; }
@@ -297,9 +301,9 @@ static gboolean on_draw_desktop(GtkWidget *widget, cairo_t *cr, gpointer data) {
         return FALSE;
     }
 
-    /* 3. Draw Desktop Icons with pixel-crisp Helvetica 8pt bitmap font */
+    /* 3. Draw Desktop Icons with pixel-crisp W95FA 8pt bitmap font */
     PangoLayout *layout = gtk_widget_create_pango_layout(widget, NULL);
-    PangoFontDescription *font_desc = pango_font_description_from_string("Helvetica 8");
+    PangoFontDescription *font_desc = pango_font_description_from_string("W95FA 8");
     pango_layout_set_font_description(layout, font_desc);
     pango_layout_set_alignment(layout, PANGO_ALIGN_CENTER);
     pango_layout_set_width(layout, 76 * PANGO_SCALE);
@@ -730,7 +734,7 @@ static void create_surface_for_monitor(GdkMonitor *mon, int idx) {
     memset(ms, 0, sizeof(*ms));
     ms->monitor = mon;
 
-    const char *model = gdk_monitor_get_model(mon);
+    const char *model = mon ? gdk_monitor_get_model(mon) : NULL;
     snprintf(ms->plug_name, sizeof(ms->plug_name), "%s", model ? model : "Monitor");
 
     ms->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
@@ -774,7 +778,48 @@ static void create_surface_for_monitor(GdkMonitor *mon, int idx) {
     gtk_widget_show_all(ms->window);
 }
 
+static guint s_desktop_rebuild_timer = 0;
+
+static void rebuild_all_desktop_surfaces(void) {
+    chicago_close_context_menu();
+    for (int i = 0; i < g_app.surface_count; i++) {
+        if (g_app.surfaces[i].window) {
+            gtk_widget_destroy(g_app.surfaces[i].window);
+            g_app.surfaces[i].window = NULL;
+        }
+    }
+    memset(g_app.surfaces, 0, sizeof(g_app.surfaces));
+    g_app.surface_count = 0;
+
+    GdkDisplay *display = gdk_display_get_default();
+    int n_monitors = display ? gdk_display_get_n_monitors(display) : 0;
+    if (n_monitors > 0) {
+        for (int i = 0; i < n_monitors && i < MAX_MONITORS; i++) {
+            create_surface_for_monitor(gdk_display_get_monitor(display, i), i);
+        }
+    } else {
+        create_surface_for_monitor(NULL, 0);
+    }
+    load_desktop_Appearance_config();
+}
+
+static gboolean on_desktop_monitors_changed_debounced(gpointer user_data) {
+    (void)user_data;
+    s_desktop_rebuild_timer = 0;
+    rebuild_all_desktop_surfaces();
+    return G_SOURCE_REMOVE;
+}
+
+static void on_desktop_monitor_event(GdkDisplay *dpy, GdkMonitor *mon, gpointer user_data) {
+    (void)dpy; (void)mon; (void)user_data;
+    if (s_desktop_rebuild_timer > 0) {
+        g_source_remove(s_desktop_rebuild_timer);
+    }
+    s_desktop_rebuild_timer = g_timeout_add(200, on_desktop_monitors_changed_debounced, NULL);
+}
+
 int main(int argc, char **argv) {
+    chicago_single_instance_lock("chicago-desktop");
     gtk_init(&argc, &argv);
     chicago_apply_theme();
 
@@ -789,6 +834,11 @@ int main(int argc, char **argv) {
         }
     } else {
         create_surface_for_monitor(NULL, 0);
+    }
+
+    if (display) {
+        g_signal_connect(display, "monitor-added", G_CALLBACK(on_desktop_monitor_event), NULL);
+        g_signal_connect(display, "monitor-removed", G_CALLBACK(on_desktop_monitor_event), NULL);
     }
 
     load_desktop_Appearance_config();

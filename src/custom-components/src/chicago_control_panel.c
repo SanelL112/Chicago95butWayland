@@ -26,6 +26,7 @@
 #include <string.h>
 #include <time.h>
 #include "../include/chicago_common.h"
+#include "../include/chicago_power.h"
 
 /* Forward declarations for applet dialogs */
 static void show_display_properties_dialog(gboolean standalone);
@@ -177,7 +178,7 @@ static gboolean on_draw_scheme_preview(GtkWidget *widget, cairo_t *cr, gpointer 
     cairo_fill(cr);
 
     PangoLayout *layout = gtk_widget_create_pango_layout(widget, NULL);
-    pango_layout_set_markup(layout, "<span font_desc='Helvetica Bold 8' foreground='#c0c0c0'>Inactive Window</span>", -1);
+    pango_layout_set_markup(layout, "<span font_desc='W95FA Bold 8' foreground='#c0c0c0'>Inactive Window</span>", -1);
     cairo_move_to(cr, iw_x + 7, iw_y + 5);
     pango_cairo_show_layout(cr, layout);
 
@@ -191,7 +192,7 @@ static gboolean on_draw_scheme_preview(GtkWidget *widget, cairo_t *cr, gpointer 
     cairo_rectangle(cr, aw_x + 3, aw_y + 3, aw_w - 6, 16);
     cairo_fill(cr);
 
-    pango_layout_set_markup(layout, "<span font_desc='Helvetica Bold 8' foreground='#ffffff'>Active Window</span>", -1);
+    pango_layout_set_markup(layout, "<span font_desc='W95FA Bold 8' foreground='#ffffff'>Active Window</span>", -1);
     cairo_move_to(cr, aw_x + 7, aw_y + 5);
     pango_cairo_show_layout(cr, layout);
 
@@ -200,7 +201,7 @@ static gboolean on_draw_scheme_preview(GtkWidget *widget, cairo_t *cr, gpointer 
     cairo_rectangle(cr, aw_x + 6, aw_y + 24, aw_w - 12, aw_h - 30);
     cairo_fill(cr);
     chicago_draw_bevel(cr, aw_x + 6, aw_y + 24, aw_w - 12, aw_h - 30, FALSE);
-    pango_layout_set_markup(layout, "<span font_desc='Helvetica 8' foreground='#000000'>Window Text</span>", -1);
+    pango_layout_set_markup(layout, "<span font_desc='W95FA 8' foreground='#000000'>Window Text</span>", -1);
     cairo_move_to(cr, aw_x + 12, aw_y + 30);
     pango_cairo_show_layout(cr, layout);
 
@@ -451,7 +452,7 @@ static void show_display_properties_dialog(gboolean standalone) {
     g_signal_connect(st->scheme_combo, "changed", G_CALLBACK(on_scheme_changed), st);
     gtk_box_pack_start(GTK_BOX(app_vbox), st->scheme_combo, FALSE, FALSE, 0);
 
-    GtkWidget *font_info = gtk_label_new("UI Font: Helvetica 8pt (Crisp OpenType Bitmap / MS Sans Serif)\nTerminal Font: More Perfect DOS VGA 12pt");
+    GtkWidget *font_info = gtk_label_new("UI Font: W95FA 8pt (Authentic Windows 95 MS Sans Serif)\nTerminal Font: More Perfect DOS VGA 12pt");
     gtk_label_set_xalign(GTK_LABEL(font_info), 0.0f);
     gtk_box_pack_start(GTK_BOX(app_vbox), font_info, FALSE, FALSE, 4);
     gtk_notebook_append_page(GTK_NOTEBOOK(nb), app_vbox, gtk_label_new("Appearance"));
@@ -670,7 +671,7 @@ static void refresh_net_prop_list(NetPropState *ns) {
     if (g_spawn_command_line_sync("nmcli -t -f IN-USE,SSID,SIGNAL,SECURITY dev wifi list --rescan no", &out, NULL, NULL, NULL) && out) {
         char **lines = g_strsplit(out, "\n", -1);
         for (int i = 0; lines[i]; i++) {
-            char **p = g_strsplit(lines[i], ":", 4);
+            char **p = chicago_parse_wifi_row(lines[i]);
             if (p[0] && p[1] && p[1][0] != '\0') {
                 GtkTreeIter iter;
                 gtk_list_store_append(ns->wifi_store, &iter);
@@ -713,12 +714,7 @@ static void on_net_connect(GtkButton *btn, gpointer data) {
         gtk_tree_model_get(model, &iter, 1, &ssid, -1);
         const char *pass = gtk_entry_get_text(GTK_ENTRY(ns->pass_entry));
         if (ssid && *ssid) {
-            char cmd[512];
-            if (pass && *pass)
-                snprintf(cmd, sizeof(cmd), "nmcli dev wifi connect \"%s\" password \"%s\"", ssid, pass);
-            else
-                snprintf(cmd, sizeof(cmd), "nmcli dev wifi connect \"%s\"", ssid);
-            chicago_spawn_command(cmd);
+            chicago_wifi_connect(ssid, pass);
         }
         g_free(ssid);
     }
@@ -816,10 +812,17 @@ static void on_pwr_prop_scheme(GtkComboBox *combo, gpointer data) {
     (void)data;
     const char *id = gtk_combo_box_get_active_id(combo);
     if (id) {
-        char cmd[128];
-        snprintf(cmd, sizeof(cmd), "powerprofilesctl set %s", id);
-        chicago_spawn_command(cmd);
+        chicago_power_set(id);
     }
+}
+
+static void on_power_scheme_changed(GDBusProxy *proxy, GVariant *changed, const gchar * const *invalidated, gpointer data) {
+    (void)proxy; (void)changed; (void)invalidated;
+    char profile[64];
+    chicago_power_get(profile, sizeof(profile));
+    g_signal_handlers_block_by_func(data, on_pwr_prop_scheme, NULL);
+    gtk_combo_box_set_active_id(GTK_COMBO_BOX(data), profile);
+    g_signal_handlers_unblock_by_func(data, on_pwr_prop_scheme, NULL);
 }
 
 static void show_power_properties_dialog(gboolean standalone) {
@@ -844,8 +847,12 @@ static void show_power_properties_dialog(gboolean standalone) {
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(sch_combo), "power-saver", "Portable / Laptop (Power Saver)");
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(sch_combo), "balanced", "Home / Office Desk (Balanced)");
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(sch_combo), "performance", "Always On (Maximum Performance)");
-    gtk_combo_box_set_active(GTK_COMBO_BOX(sch_combo), 1);
+    char current_profile[64];
+    chicago_power_get(current_profile, sizeof(current_profile));
+    gtk_combo_box_set_active_id(GTK_COMBO_BOX(sch_combo), current_profile);
     g_signal_connect(sch_combo, "changed", G_CALLBACK(on_pwr_prop_scheme), NULL);
+    GDBusProxy *power = chicago_power_connect();
+    if (power) g_signal_connect_object(power, "g-properties-changed", G_CALLBACK(on_power_scheme_changed), sch_combo, 0);
     gtk_box_pack_start(GTK_BOX(sch_vbox), sch_combo, FALSE, FALSE, 0);
     gtk_container_add(GTK_CONTAINER(sch_frame), sch_vbox);
     gtk_box_pack_start(GTK_BOX(vbox), sch_frame, FALSE, FALSE, 0);
