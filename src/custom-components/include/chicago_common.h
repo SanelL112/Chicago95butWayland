@@ -481,6 +481,185 @@ static inline GdkPixbuf *chicago_load_icon(const char *icon_name, int size) {
     return chicago_draw_win95_flag_pixbuf(size);
 }
 
+/* Custom Windows 95 Pixel-Art Power Profile Icon (Green Leaf / Blue Dial / Red Flame) */
+static inline GdkPixbuf *chicago_draw_power_profile_pixbuf(const char *profile, int size) {
+    cairo_surface_t *surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, size, size);
+    cairo_t *cr = cairo_create(surf);
+    cairo_set_antialias(cr, CAIRO_ANTIALIAS_NONE);
+
+    if (profile && (strcmp(profile, "power-saver") == 0 || strcmp(profile, "low-power") == 0)) {
+        /* Classic Windows 95 Green Eco Leaf */
+        cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
+        cairo_arc(cr, size * 0.5, size * 0.5, size * 0.42, 0, 2 * G_PI);
+        cairo_fill(cr);
+
+        cairo_set_source_rgb(cr, 0.0, 0.65, 0.15);
+        cairo_arc(cr, size * 0.5, size * 0.5, size * 0.35, 0, 2 * G_PI);
+        cairo_fill(cr);
+
+        /* Bright green leaf highlight & stem */
+        cairo_set_source_rgb(cr, 0.55, 1.0, 0.55);
+        cairo_move_to(cr, size * 0.30, size * 0.70);
+        cairo_line_to(cr, size * 0.50, size * 0.25);
+        cairo_line_to(cr, size * 0.72, size * 0.45);
+        cairo_close_path(cr);
+        cairo_fill(cr);
+
+        cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
+        cairo_set_line_width(cr, 1.2);
+        cairo_move_to(cr, size * 0.28, size * 0.72);
+        cairo_line_to(cr, size * 0.68, size * 0.32);
+        cairo_stroke(cr);
+    } else if (profile && strcmp(profile, "performance") == 0) {
+        /* Classic Windows 95 Red/Orange High-Performance Flame / Rocket */
+        cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
+        cairo_move_to(cr, size * 0.50, 1);
+        cairo_line_to(cr, size * 0.88, size * 0.62);
+        cairo_line_to(cr, size * 0.72, size - 1);
+        cairo_line_to(cr, size * 0.28, size - 1);
+        cairo_line_to(cr, size * 0.12, size * 0.62);
+        cairo_close_path(cr);
+        cairo_fill(cr);
+
+        cairo_set_source_rgb(cr, 0.90, 0.10, 0.05);
+        cairo_move_to(cr, size * 0.50, 2.5);
+        cairo_line_to(cr, size * 0.80, size * 0.62);
+        cairo_line_to(cr, size * 0.68, size - 2);
+        cairo_line_to(cr, size * 0.32, size - 2);
+        cairo_line_to(cr, size * 0.20, size * 0.62);
+        cairo_close_path(cr);
+        cairo_fill(cr);
+
+        cairo_set_source_rgb(cr, 1.0, 0.85, 0.0);
+        cairo_move_to(cr, size * 0.50, size * 0.35);
+        cairo_line_to(cr, size * 0.66, size * 0.68);
+        cairo_line_to(cr, size * 0.58, size - 2);
+        cairo_line_to(cr, size * 0.42, size - 2);
+        cairo_line_to(cr, size * 0.34, size * 0.68);
+        cairo_close_path(cr);
+        cairo_fill(cr);
+    } else {
+        /* Balanced: Classic Windows 95 Blue/Silver Speedometer Gauge */
+        cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
+        cairo_arc(cr, size * 0.5, size * 0.55, size * 0.43, 0, 2 * G_PI);
+        cairo_fill(cr);
+
+        cairo_set_source_rgb(cr, 0.0, 0.0, 0.502);
+        cairo_arc(cr, size * 0.5, size * 0.55, size * 0.36, 0, 2 * G_PI);
+        cairo_fill(cr);
+
+        cairo_set_source_rgb(cr, 0.75, 0.75, 0.75);
+        cairo_arc(cr, size * 0.5, size * 0.55, size * 0.26, 0, 2 * G_PI);
+        cairo_fill(cr);
+
+        /* Red gauge needle */
+        cairo_set_source_rgb(cr, 0.90, 0.05, 0.05);
+        cairo_set_line_width(cr, 1.5);
+        cairo_move_to(cr, size * 0.5, size * 0.58);
+        cairo_line_to(cr, size * 0.68, size * 0.28);
+        cairo_stroke(cr);
+    }
+
+    cairo_destroy(cr);
+    GdkPixbuf *pb = gdk_pixbuf_get_from_surface(surf, 0, 0, size, size);
+    cairo_surface_destroy(surf);
+    return pb;
+}
+
+/* Dynamic Chicago95 Battery Icon (0/20/40/60/80/100% + Charging Bolt Overlay) */
+static inline GdkPixbuf *chicago_load_battery_pixbuf(int pct, gboolean charging, int size) {
+    const char *icon_name = "gpm-battery-100";
+    if (pct <= 10)      icon_name = "gpm-battery-000";
+    else if (pct <= 30) icon_name = "gpm-battery-020";
+    else if (pct <= 50) icon_name = "gpm-battery-040";
+    else if (pct <= 70) icon_name = "gpm-battery-060";
+    else if (pct <= 90) icon_name = "gpm-battery-080";
+    else                icon_name = "gpm-battery-100";
+
+    GdkPixbuf *base = chicago_load_icon(icon_name, size);
+    if (!charging || !base) return base;
+
+    cairo_surface_t *surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, size, size);
+    cairo_t *cr = cairo_create(surf);
+    gdk_cairo_set_source_pixbuf(cr, base, 0, 0);
+    cairo_paint(cr);
+    g_object_unref(base);
+
+    /* Crisp Windows 95 yellow/black lightning bolt overlay */
+    cairo_set_antialias(cr, CAIRO_ANTIALIAS_NONE);
+    cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
+    cairo_move_to(cr, size * 0.58, 1);
+    cairo_line_to(cr, size * 0.25, size * 0.55);
+    cairo_line_to(cr, size * 0.50, size * 0.55);
+    cairo_line_to(cr, size * 0.38, size - 1);
+    cairo_line_to(cr, size * 0.78, size * 0.42);
+    cairo_line_to(cr, size * 0.52, size * 0.42);
+    cairo_close_path(cr);
+    cairo_stroke_preserve(cr);
+    cairo_set_source_rgb(cr, 1.0, 0.92, 0.0);
+    cairo_fill(cr);
+
+    cairo_destroy(cr);
+    GdkPixbuf *out = gdk_pixbuf_get_from_surface(surf, 0, 0, size, size);
+    cairo_surface_destroy(surf);
+    return out;
+}
+
+static inline GdkPixbuf *chicago_load_network_pixbuf(gboolean has_eth, gboolean has_wifi, int size) {
+    if (has_eth) {
+        return chicago_load_icon("nm-device-wired", size);
+    } else if (has_wifi) {
+        return chicago_load_icon("nm-device-wireless", size);
+    } else {
+        return chicago_load_icon("nm-no-connection", size);
+    }
+}
+
+static inline GdkPixbuf *chicago_load_bluetooth_pixbuf(gboolean enabled, gboolean connected, int size) {
+    if (!enabled) {
+        return chicago_load_icon("bluetooth-disabled", size);
+    } else if (connected) {
+        return chicago_load_icon("bluetooth-paired", size);
+    } else {
+        return chicago_load_icon("bluetooth-active", size);
+    }
+}
+
+static inline GdkPixbuf *chicago_load_volume_pixbuf(int vol, gboolean muted, int size) {
+    if (muted || vol <= 0) {
+        return chicago_load_icon("audio-volume-muted", size);
+    } else if (vol < 34) {
+        return chicago_load_icon("audio-volume-low", size);
+    } else if (vol < 67) {
+        return chicago_load_icon("audio-volume-medium", size);
+    } else {
+        return chicago_load_icon("audio-volume-high", size);
+    }
+}
+
+static inline GdkPixbuf *chicago_load_mic_pixbuf(gboolean muted, int size) {
+    GdkPixbuf *base = chicago_load_icon("audio-input-microphone", size);
+    if (!muted || !base) return base;
+
+    cairo_surface_t *surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, size, size);
+    cairo_t *cr = cairo_create(surf);
+    gdk_cairo_set_source_pixbuf(cr, base, 0, 0);
+    cairo_paint(cr);
+    g_object_unref(base);
+
+    /* Red mute slash */
+    cairo_set_source_rgb(cr, 0.85, 0.0, 0.0);
+    cairo_set_line_width(cr, 2.0);
+    cairo_move_to(cr, 2, 2);
+    cairo_line_to(cr, size - 2, size - 2);
+    cairo_stroke(cr);
+
+    cairo_destroy(cr);
+    GdkPixbuf *out = gdk_pixbuf_get_from_surface(surf, 0, 0, size, size);
+    cairo_surface_destroy(surf);
+    return out;
+}
+
 static inline void chicago_spawn_command(const char *cmd) {
     if (!cmd || !*cmd) return;
     GError *err = NULL;

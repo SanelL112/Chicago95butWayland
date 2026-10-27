@@ -53,6 +53,20 @@ typedef struct {
     GtkWidget *start_button;
     GtkWidget *pins_box;
     GtkWidget *task_box;
+    GtkWidget *vol_btn;
+    GtkWidget *vol_img;
+    GtkWidget *mic_btn;
+    GtkWidget *mic_img;
+    GtkWidget *prof_btn;
+    GtkWidget *prof_img;
+    GtkWidget *net_btn;
+    GtkWidget *net_img;
+    GtkWidget *bt_btn;
+    GtkWidget *bt_img;
+    GtkWidget *pwr_btn;
+    GtkWidget *pwr_img;
+    GtkWidget *pwr_label;
+    GtkWidget *cc_btn;
     GtkWidget *clock_label;
 } BarInstance;
 
@@ -88,6 +102,34 @@ typedef struct {
 
     GtkWidget *cal_popup;
 
+    /* Unified Windows 95 Control Center Flyout */
+    GtkWidget *cc_popup;
+    GtkWidget *cc_notebook;
+    GtkWidget *cc_sysstats_lbl;
+    GtkWidget *cc_vol_scale;
+    GtkWidget *cc_vol_mute_chk;
+    GtkWidget *cc_mic_scale;
+    GtkWidget *cc_mic_mute_chk;
+    GtkWidget *cc_bright_scale;
+    GtkWidget *cc_wifi_toggle_btn;
+    GtkWidget *cc_bt_toggle_btn;
+    GtkWidget *cc_prof_toggle_btn;
+    GtkWidget *cc_caffeine_toggle_btn;
+    GtkWidget *cc_net_status_lbl;
+    GtkWidget *cc_wifi_list_box;
+    GtkWidget *cc_bt_status_lbl;
+    GtkWidget *cc_bt_list_box;
+    GtkWidget *cc_audio_sinks_box;
+    GtkWidget *cc_pwr_detail_lbl;
+    gboolean cc_updating;
+    gboolean caffeine_active;
+
+    /* Cached Audio State for Zero-Subprocess Periodic Tray Refreshes */
+    int cached_vol;
+    gboolean cached_vol_muted;
+    int cached_mic_vol;
+    gboolean cached_mic_muted;
+
     struct wl_display *wl_display;
     struct wl_registry *wl_registry;
     struct wl_seat *wl_seat;
@@ -103,9 +145,13 @@ static TaskbarApp g_tb;
 
 static void hide_all_popups(void);
 static void set_start_menu_visible(gboolean visible, GdkMonitor *target_mon);
+static void update_tray_indicators(gboolean query_audio);
+static void toggle_control_center_popup(GdkMonitor *mon, int initial_tab);
+static gboolean on_bar_window_button_press(GtkWidget *widget, GdkEventButton *event, gpointer data);
+static void on_quick_show_desktop(GtkButton *btn, gpointer data);
 
 /* =========================================================================
- * System Helpers (Audio, Brightness, Network, Power)
+ * System Helpers (Audio, Brightness, Network, Bluetooth, Battery, Power Profile)
  * ========================================================================= */
 
 static int get_current_volume(gboolean *out_muted) {
@@ -124,9 +170,38 @@ static int get_current_volume(gboolean *out_muted) {
     return 75;
 }
 
+static int get_current_mic_volume(gboolean *out_muted) {
+    if (out_muted) *out_muted = FALSE;
+    char *stdout_str = NULL;
+    if (g_spawn_command_line_sync("wpctl get-volume @DEFAULT_AUDIO_SOURCE@", &stdout_str, NULL, NULL, NULL) && stdout_str) {
+        if (strstr(stdout_str, "[MUTED]") && out_muted) *out_muted = TRUE;
+        char *p = strstr(stdout_str, "Volume:");
+        if (p) {
+            double v = g_ascii_strtod(p + 7, NULL);
+            g_free(stdout_str);
+            return CLAMP((int)(v * 100.0 + 0.5), 0, 100);
+        }
+        g_free(stdout_str);
+    }
+    return 100;
+}
+
 static int get_current_brightness_pct(void) {
     char *cur_s = NULL, *max_s = NULL;
     int pct = 50;
+    if (g_file_get_contents("/sys/class/backlight/intel_backlight/brightness", &cur_s, NULL, NULL) &&
+        g_file_get_contents("/sys/class/backlight/intel_backlight/max_brightness", &max_s, NULL, NULL) &&
+        cur_s && max_s) {
+        double c = g_ascii_strtod(cur_s, NULL);
+        double m = g_ascii_strtod(max_s, NULL);
+        if (m > 0) pct = CLAMP((int)((c / m) * 100.0 + 0.5), 5, 100);
+        g_free(cur_s);
+        g_free(max_s);
+        return pct;
+    }
+    g_free(cur_s);
+    g_free(max_s);
+    cur_s = NULL; max_s = NULL;
     if (g_spawn_command_line_sync("brightnessctl get", &cur_s, NULL, NULL, NULL) &&
         g_spawn_command_line_sync("brightnessctl max", &max_s, NULL, NULL, NULL) &&
         cur_s && max_s) {
@@ -137,6 +212,176 @@ static int get_current_brightness_pct(void) {
     g_free(cur_s);
     g_free(max_s);
     return pct;
+}
+
+static void read_battery_sysfs(int *out_pct, gboolean *out_charging, double *out_watts, char *out_status, size_t status_sz) {
+    if (out_pct) *out_pct = 100;
+    if (out_charging) *out_charging = FALSE;
+    if (out_watts) *out_watts = 0.0;
+    if (out_status && status_sz > 0) g_strlcpy(out_status, "AC Online", status_sz);
+
+    char *cap = NULL, *st = NULL, *cur = NULL, *volt = NULL, *pwr = NULL;
+    if (g_file_get_contents("/sys/class/power_supply/BAT0/capacity", &cap, NULL, NULL) && cap) {
+        if (out_pct) *out_pct = CLAMP(atoi(cap), 0, 100);
+        g_free(cap);
+    }
+    if (g_file_get_contents("/sys/class/power_supply/BAT0/status", &st, NULL, NULL) && st) {
+        g_strstrip(st);
+        if (out_status && status_sz > 0) g_strlcpy(out_status, st, status_sz);
+        if (out_charging && g_ascii_strcasecmp(st, "Charging") == 0) *out_charging = TRUE;
+        g_free(st);
+    }
+    if (g_file_get_contents("/sys/class/power_supply/BAT0/power_now", &pwr, NULL, NULL) && pwr) {
+        if (out_watts) *out_watts = g_ascii_strtod(pwr, NULL) / 1e6;
+        g_free(pwr);
+    } else {
+        if (g_file_get_contents("/sys/class/power_supply/BAT0/current_now", &cur, NULL, NULL) &&
+            g_file_get_contents("/sys/class/power_supply/BAT0/voltage_now", &volt, NULL, NULL) &&
+            cur && volt) {
+            double c_ua = g_ascii_strtod(cur, NULL);
+            double v_uv = g_ascii_strtod(volt, NULL);
+            if (out_watts) *out_watts = (c_ua * v_uv) / 1e12;
+        }
+        g_free(cur);
+        g_free(volt);
+    }
+}
+
+static void read_power_profile_sysfs(char *out_prof, size_t prof_sz) {
+    if (!out_prof || prof_sz == 0) return;
+    g_strlcpy(out_prof, "balanced", prof_sz);
+    char *pf = NULL;
+    if (g_file_get_contents("/sys/firmware/acpi/platform_profile", &pf, NULL, NULL) && pf) {
+        g_strstrip(pf);
+        if (strcmp(pf, "low-power") == 0 || strcmp(pf, "power-saver") == 0 || strcmp(pf, "quiet") == 0) {
+            g_strlcpy(out_prof, "power-saver", prof_sz);
+        } else if (strcmp(pf, "performance") == 0) {
+            g_strlcpy(out_prof, "performance", prof_sz);
+        } else {
+            g_strlcpy(out_prof, "balanced", prof_sz);
+        }
+        g_free(pf);
+    }
+}
+
+static void read_network_sysfs(gboolean *out_eth, gboolean *out_wifi, char *out_eth_dev, size_t ed_sz, char *out_wifi_dev, size_t wd_sz) {
+    if (out_eth) *out_eth = FALSE;
+    if (out_wifi) *out_wifi = FALSE;
+    if (out_eth_dev && ed_sz > 0) out_eth_dev[0] = '\0';
+    if (out_wifi_dev && wd_sz > 0) out_wifi_dev[0] = '\0';
+
+    GDir *dir = g_dir_open("/sys/class/net", 0, NULL);
+    if (!dir) return;
+    const char *name;
+    while ((name = g_dir_read_name(dir)) != NULL) {
+        if (strcmp(name, "lo") == 0 ||
+            g_str_has_prefix(name, "tailscale") ||
+            g_str_has_prefix(name, "vmnet") ||
+            g_str_has_prefix(name, "veth") ||
+            g_str_has_prefix(name, "docker") ||
+            g_str_has_prefix(name, "virbr") ||
+            strcmp(name, "net-merge") == 0) {
+            continue;
+        }
+        char op_path[512];
+        snprintf(op_path, sizeof(op_path), "/sys/class/net/%s/operstate", name);
+        char *op = NULL;
+        if (g_file_get_contents(op_path, &op, NULL, NULL) && op) {
+            g_strstrip(op);
+            if (strcmp(op, "up") == 0) {
+                char wl_path[512];
+                snprintf(wl_path, sizeof(wl_path), "/sys/class/net/%s/wireless", name);
+                if (g_file_test(wl_path, G_FILE_TEST_IS_DIR)) {
+                    if (out_wifi) *out_wifi = TRUE;
+                    if (out_wifi_dev && wd_sz > 0) g_strlcpy(out_wifi_dev, name, wd_sz);
+                } else {
+                    if (out_eth) *out_eth = TRUE;
+                    if (out_eth_dev && ed_sz > 0) g_strlcpy(out_eth_dev, name, ed_sz);
+                }
+            }
+            g_free(op);
+        }
+    }
+    g_dir_close(dir);
+}
+
+static void read_bluetooth_sysfs(gboolean *out_enabled, gboolean *out_connected) {
+    if (out_enabled) *out_enabled = TRUE;
+    if (out_connected) *out_connected = FALSE;
+
+    GDir *rf_dir = g_dir_open("/sys/class/rfkill", 0, NULL);
+    if (rf_dir) {
+        const char *rf_name;
+        while ((rf_name = g_dir_read_name(rf_dir)) != NULL) {
+            char tpath[512];
+            snprintf(tpath, sizeof(tpath), "/sys/class/rfkill/%s/type", rf_name);
+            char *t = NULL;
+            if (g_file_get_contents(tpath, &t, NULL, NULL) && t) {
+                g_strstrip(t);
+                if (strcmp(t, "bluetooth") == 0) {
+                    char spath[512];
+                    snprintf(spath, sizeof(spath), "/sys/class/rfkill/%s/soft", rf_name);
+                    char *s = NULL;
+                    if (g_file_get_contents(spath, &s, NULL, NULL) && s) {
+                        if (atoi(s) != 0 && out_enabled) *out_enabled = FALSE;
+                        g_free(s);
+                    }
+                }
+                g_free(t);
+            }
+        }
+        g_dir_close(rf_dir);
+    }
+
+    if (out_enabled && !*out_enabled) return;
+
+    GDir *bt_dir = g_dir_open("/sys/class/bluetooth", 0, NULL);
+    if (bt_dir) {
+        const char *bname;
+        while ((bname = g_dir_read_name(bt_dir)) != NULL) {
+            if (strchr(bname, ':') != NULL) {
+                if (out_connected) *out_connected = TRUE;
+                break;
+            }
+        }
+        g_dir_close(bt_dir);
+    }
+}
+
+static gboolean on_deferred_tray_refresh(gpointer data) {
+    gboolean query_audio = GPOINTER_TO_INT(data) ? TRUE : FALSE;
+    update_tray_indicators(query_audio);
+    return G_SOURCE_REMOVE;
+}
+
+static void set_power_profile_with_governor_fix(const char *prof) {
+    if (!prof || !*prof) return;
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd),
+             "for g in /sys/devices/system/cpu/cpufreq/policy*/scaling_governor; do "
+             "[ -w \"$g\" ] && echo powersave > \"$g\" 2>/dev/null || true; "
+             "done; powerprofilesctl set %s", prof);
+    chicago_spawn_command(cmd);
+    g_timeout_add(300, on_deferred_tray_refresh, GINT_TO_POINTER(0));
+}
+
+static void cycle_power_profile(void) {
+    char script_path[512];
+    snprintf(script_path, sizeof(script_path), "%s/.config/hypr/scripts/cycle-power-profile.sh", g_get_home_dir());
+    if (g_file_test(script_path, G_FILE_TEST_IS_EXECUTABLE)) {
+        chicago_spawn_command(script_path);
+        g_timeout_add(350, on_deferred_tray_refresh, GINT_TO_POINTER(0));
+        return;
+    }
+    char cur[64];
+    read_power_profile_sysfs(cur, sizeof(cur));
+    if (strcmp(cur, "power-saver") == 0) {
+        set_power_profile_with_governor_fix("balanced");
+    } else if (strcmp(cur, "balanced") == 0) {
+        set_power_profile_with_governor_fix("performance");
+    } else {
+        set_power_profile_with_governor_fix("power-saver");
+    }
 }
 
 /* =========================================================================
@@ -1061,8 +1306,86 @@ static void set_start_menu_visible(gboolean visible, GdkMonitor *target_mon) {
 }
 
 /* =========================================================================
- * System Tray Interactive Popups (Volume, Network/Wi-Fi, Power/Brightness, Clock)
+ * System Tray Dynamic Indicators & Unified Windows 95 Control Center
  * ========================================================================= */
+
+static void update_tray_indicators(gboolean query_audio) {
+    if (query_audio) {
+        g_tb.cached_vol = get_current_volume(&g_tb.cached_vol_muted);
+        g_tb.cached_mic_vol = get_current_mic_volume(&g_tb.cached_mic_muted);
+    }
+
+    int bat_pct = 100;
+    gboolean bat_charging = FALSE;
+    double bat_watts = 0.0;
+    char bat_status[64] = "Online";
+    read_battery_sysfs(&bat_pct, &bat_charging, &bat_watts, bat_status, sizeof(bat_status));
+
+    char prof[64] = "balanced";
+    read_power_profile_sysfs(prof, sizeof(prof));
+
+    gboolean has_eth = FALSE, has_wifi = FALSE;
+    char eth_dev[64] = "", wifi_dev[64] = "";
+    read_network_sysfs(&has_eth, &has_wifi, eth_dev, sizeof(eth_dev), wifi_dev, sizeof(wifi_dev));
+
+    gboolean bt_enabled = TRUE, bt_connected = FALSE;
+    read_bluetooth_sysfs(&bt_enabled, &bt_connected);
+
+    GdkPixbuf *vol_pb  = chicago_load_volume_pixbuf(g_tb.cached_vol, g_tb.cached_vol_muted, 16);
+    GdkPixbuf *mic_pb  = chicago_load_mic_pixbuf(g_tb.cached_mic_muted, 16);
+    GdkPixbuf *prof_pb = chicago_draw_power_profile_pixbuf(prof, 16);
+    GdkPixbuf *net_pb  = chicago_load_network_pixbuf(has_eth, has_wifi, 16);
+    GdkPixbuf *bt_pb   = chicago_load_bluetooth_pixbuf(bt_enabled, bt_connected, 16);
+    GdkPixbuf *pwr_pb  = chicago_load_battery_pixbuf(bat_pct, bat_charging, 16);
+
+    char vol_tip[256], mic_tip[256], prof_tip[256], net_tip[256], bt_tip[256], pwr_tip[256], pwr_txt[32];
+    snprintf(vol_tip, sizeof(vol_tip), "Master Volume: %d%%%s\n(Click: Audio Output | Scroll: ±5%% | Middle-click: Mute)",
+             g_tb.cached_vol, g_tb.cached_vol_muted ? " [MUTED]" : "");
+    snprintf(mic_tip, sizeof(mic_tip), "Microphone Input: %d%%%s\n(Click: Toggle Mute | Scroll: ±5%%)",
+             g_tb.cached_mic_vol, g_tb.cached_mic_muted ? " [MUTED]" : "");
+    snprintf(prof_tip, sizeof(prof_tip), "Power Profile: %s\n(Click to cycle Saver -> Balanced -> Performance)", prof);
+
+    if (has_eth && has_wifi) {
+        snprintf(net_tip, sizeof(net_tip), "Network: Wired Ethernet (%s) + Wi-Fi (%s)\n(Click to open Network Control Center)", eth_dev, wifi_dev);
+    } else if (has_eth) {
+        snprintf(net_tip, sizeof(net_tip), "Network: Wired Ethernet (%s)\n(Click to open Network Control Center)", eth_dev);
+    } else if (has_wifi) {
+        snprintf(net_tip, sizeof(net_tip), "Network: Wireless (%s)\n(Click to open Network Control Center)", wifi_dev);
+    } else {
+        snprintf(net_tip, sizeof(net_tip), "Network: Disconnected\n(Click to open Network Control Center)");
+    }
+
+    snprintf(bt_tip, sizeof(bt_tip), "Bluetooth: %s\n(Click to manage Bluetooth devices)",
+             !bt_enabled ? "Disabled (Off)" : (bt_connected ? "Connected" : "On (Standby)"));
+
+    snprintf(pwr_tip, sizeof(pwr_tip), "Battery: %d%% (%s, %.1f W) | Profile: %s\n(Click: Power & Brightness | Scroll: Adjust Brightness)",
+             bat_pct, bat_status, bat_watts, prof);
+    snprintf(pwr_txt, sizeof(pwr_txt), "%d%%", bat_pct);
+
+    for (int i = 0; i < g_tb.bar_count; i++) {
+        BarInstance *bi = &g_tb.bars[i];
+        if (bi->vol_img && vol_pb)   gtk_image_set_from_pixbuf(GTK_IMAGE(bi->vol_img), vol_pb);
+        if (bi->vol_btn)             gtk_widget_set_tooltip_text(bi->vol_btn, vol_tip);
+        if (bi->mic_img && mic_pb)   gtk_image_set_from_pixbuf(GTK_IMAGE(bi->mic_img), mic_pb);
+        if (bi->mic_btn)             gtk_widget_set_tooltip_text(bi->mic_btn, mic_tip);
+        if (bi->prof_img && prof_pb) gtk_image_set_from_pixbuf(GTK_IMAGE(bi->prof_img), prof_pb);
+        if (bi->prof_btn)            gtk_widget_set_tooltip_text(bi->prof_btn, prof_tip);
+        if (bi->net_img && net_pb)   gtk_image_set_from_pixbuf(GTK_IMAGE(bi->net_img), net_pb);
+        if (bi->net_btn)             gtk_widget_set_tooltip_text(bi->net_btn, net_tip);
+        if (bi->bt_img && bt_pb)     gtk_image_set_from_pixbuf(GTK_IMAGE(bi->bt_img), bt_pb);
+        if (bi->bt_btn)              gtk_widget_set_tooltip_text(bi->bt_btn, bt_tip);
+        if (bi->pwr_img && pwr_pb)   gtk_image_set_from_pixbuf(GTK_IMAGE(bi->pwr_img), pwr_pb);
+        if (bi->pwr_label)           gtk_label_set_text(GTK_LABEL(bi->pwr_label), pwr_txt);
+        if (bi->pwr_btn)             gtk_widget_set_tooltip_text(bi->pwr_btn, pwr_tip);
+    }
+
+    if (vol_pb)  g_object_unref(vol_pb);
+    if (mic_pb)  g_object_unref(mic_pb);
+    if (prof_pb) g_object_unref(prof_pb);
+    if (net_pb)  g_object_unref(net_pb);
+    if (bt_pb)   g_object_unref(bt_pb);
+    if (pwr_pb)  g_object_unref(pwr_pb);
+}
 
 static void hide_all_popups(void) {
     chicago_close_context_menu();
@@ -1072,6 +1395,7 @@ static void hide_all_popups(void) {
     if (g_tb.net_popup) gtk_widget_hide(g_tb.net_popup);
     if (g_tb.pwr_popup) gtk_widget_hide(g_tb.pwr_popup);
     if (g_tb.cal_popup) gtk_widget_hide(g_tb.cal_popup);
+    if (g_tb.cc_popup)  gtk_widget_hide(g_tb.cc_popup);
 }
 
 static gboolean on_sighup_hide_popups(gpointer data) {
@@ -1082,287 +1406,724 @@ static gboolean on_sighup_hide_popups(gpointer data) {
     if (g_tb.net_popup) gtk_widget_hide(g_tb.net_popup);
     if (g_tb.pwr_popup) gtk_widget_hide(g_tb.pwr_popup);
     if (g_tb.cal_popup) gtk_widget_hide(g_tb.cal_popup);
+    if (g_tb.cc_popup)  gtk_widget_hide(g_tb.cc_popup);
     return G_SOURCE_CONTINUE;
 }
 
-static void on_vol_scale_changed(GtkRange *range, gpointer data) {
+static void refresh_control_center_contents(void);
+
+static gboolean on_deferred_cc_refresh(gpointer data) {
     (void)data;
-    if (g_tb.vol_updating) return;
-    int val = (int)gtk_range_get_value(range);
+    update_tray_indicators(TRUE);
+    if (g_tb.cc_popup && gtk_widget_get_visible(g_tb.cc_popup)) {
+        refresh_control_center_contents();
+    }
+    return G_SOURCE_REMOVE;
+}
+
+static void on_cc_vol_scale_changed(GtkRange *range, gpointer data) {
+    (void)data;
+    if (g_tb.cc_updating) return;
+    int val = CLAMP((int)gtk_range_get_value(range), 0, 100);
+    g_tb.cached_vol = val;
     char cmd[128];
-    snprintf(cmd, sizeof(cmd), "wpctl set-volume @DEFAULT_AUDIO_SINK@ %d%%", CLAMP(val, 0, 100));
+    snprintf(cmd, sizeof(cmd), "wpctl set-volume @DEFAULT_AUDIO_SINK@ %d%%", val);
     chicago_spawn_command(cmd);
+    update_tray_indicators(FALSE);
 }
 
-static void on_vol_mute_toggled(GtkToggleButton *tb, gpointer data) {
+static void on_cc_vol_mute_toggled(GtkToggleButton *tb, gpointer data) {
     (void)data;
-    if (g_tb.vol_updating) return;
+    if (g_tb.cc_updating) return;
     gboolean muted = gtk_toggle_button_get_active(tb);
+    g_tb.cached_vol_muted = muted;
     chicago_spawn_command(muted ? "wpctl set-mute @DEFAULT_AUDIO_SINK@ 1" : "wpctl set-mute @DEFAULT_AUDIO_SINK@ 0");
+    update_tray_indicators(FALSE);
 }
 
-static void toggle_volume_popup(GdkMonitor *mon) {
-    if (!g_tb.vol_popup) {
-        g_tb.vol_popup = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-        gtk_window_set_decorated(GTK_WINDOW(g_tb.vol_popup), FALSE);
-        gtk_style_context_add_class(gtk_widget_get_style_context(g_tb.vol_popup), "win95-outset");
-        if (gtk_layer_is_supported()) {
-            gtk_layer_init_for_window(GTK_WINDOW(g_tb.vol_popup));
-            gtk_layer_set_layer(GTK_WINDOW(g_tb.vol_popup), GTK_LAYER_SHELL_LAYER_OVERLAY);
-            gtk_layer_set_anchor(GTK_WINDOW(g_tb.vol_popup), GTK_LAYER_SHELL_EDGE_BOTTOM, TRUE);
-            gtk_layer_set_anchor(GTK_WINDOW(g_tb.vol_popup), GTK_LAYER_SHELL_EDGE_RIGHT, TRUE);
-            gtk_layer_set_margin(GTK_WINDOW(g_tb.vol_popup), GTK_LAYER_SHELL_EDGE_BOTTOM, 28);
-            gtk_layer_set_margin(GTK_WINDOW(g_tb.vol_popup), GTK_LAYER_SHELL_EDGE_RIGHT, 40);
-            gtk_layer_set_namespace(GTK_WINDOW(g_tb.vol_popup), "chicago-vol-popup");
-        }
-
-        GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-        gtk_container_set_border_width(GTK_CONTAINER(vbox), 8);
-
-        GtkWidget *title = gtk_label_new(NULL);
-        gtk_label_set_markup(GTK_LABEL(title), "<b>Volume</b>");
-        gtk_box_pack_start(GTK_BOX(vbox), title, FALSE, FALSE, 0);
-
-        g_tb.vol_scale = gtk_scale_new_with_range(GTK_ORIENTATION_VERTICAL, 0, 100, 2);
-        gtk_range_set_inverted(GTK_RANGE(g_tb.vol_scale), TRUE);
-        gtk_scale_set_value_pos(GTK_SCALE(g_tb.vol_scale), GTK_POS_TOP);
-        gtk_widget_set_size_request(g_tb.vol_scale, 44, 130);
-        g_signal_connect(g_tb.vol_scale, "value-changed", G_CALLBACK(on_vol_scale_changed), NULL);
-        gtk_box_pack_start(GTK_BOX(vbox), g_tb.vol_scale, TRUE, TRUE, 0);
-
-        g_tb.vol_mute_chk = gtk_check_button_new_with_label("Mute");
-        g_signal_connect(g_tb.vol_mute_chk, "toggled", G_CALLBACK(on_vol_mute_toggled), NULL);
-        gtk_box_pack_start(GTK_BOX(vbox), g_tb.vol_mute_chk, FALSE, FALSE, 0);
-
-        GtkWidget *prop_btn = gtk_button_new_with_label("Audio Properties...");
-        g_signal_connect_data(prop_btn, "clicked", G_CALLBACK(on_launch_cmd_btn),
-                              g_strdup("chicago-control-panel --audio"), free_closure_str, 0);
-        gtk_box_pack_start(GTK_BOX(vbox), prop_btn, FALSE, FALSE, 0);
-
-        gtk_container_add(GTK_CONTAINER(g_tb.vol_popup), vbox);
-    }
-
-    if (gtk_widget_get_visible(g_tb.vol_popup)) {
-        gtk_widget_hide(g_tb.vol_popup);
-    } else {
-        hide_all_popups();
-        g_tb.vol_updating = TRUE;
-        gboolean muted = FALSE;
-        int vol = get_current_volume(&muted);
-        gtk_range_set_value(GTK_RANGE(g_tb.vol_scale), vol);
-        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_tb.vol_mute_chk), muted);
-        g_tb.vol_updating = FALSE;
-        if (gtk_layer_is_supported() && mon) {
-            gtk_layer_set_monitor(GTK_WINDOW(g_tb.vol_popup), mon);
-        }
-        gtk_widget_show_all(g_tb.vol_popup);
-    }
-}
-
-static void on_wifi_connect_clicked(GtkButton *btn, gpointer data) {
-    (void)btn;
-    const char *ssid = (const char *)data;
-    if (!ssid || !*ssid) return;
-    hide_all_popups();
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd), "nmcli device wifi connect \"%s\" || chicago-control-panel --network", ssid);
-    chicago_spawn_command(cmd);
-}
-
-static void refresh_network_popup_contents(void) {
-    if (!g_tb.net_status_lbl || !g_tb.net_wifi_list_box) return;
-
-    char *out = NULL;
-    char status_buf[512] = "Status: Disconnected";
-    if (g_spawn_command_line_sync("nmcli -t -f NAME,TYPE,DEVICE connection show --active", &out, NULL, NULL, NULL) && out) {
-        char **lines = g_strsplit(out, "\n", -1);
-        for (int i = 0; lines[i]; i++) {
-            if (lines[i][0] && !g_str_has_prefix(lines[i], "lo:")) {
-                snprintf(status_buf, sizeof(status_buf), "Active: %s", lines[i]);
-                break;
-            }
-        }
-        g_strfreev(lines);
-        g_free(out);
-    }
-    gtk_label_set_text(GTK_LABEL(g_tb.net_status_lbl), status_buf);
-
-    clear_container(g_tb.net_wifi_list_box);
-    char *wifi_out = NULL;
-    if (g_spawn_command_line_sync("nmcli -t -f IN-USE,SSID,SIGNAL,SECURITY dev wifi list --rescan no", &wifi_out, NULL, NULL, NULL) && wifi_out) {
-        char **lines = g_strsplit(wifi_out, "\n", -1);
-        int shown = 0;
-        for (int i = 0; lines[i] && shown < 8; i++) {
-            char **parts = g_strsplit(lines[i], ":", 4);
-            if (parts[0] && parts[1] && parts[1][0] != '\0') {
-                char row_lbl[256];
-                snprintf(row_lbl, sizeof(row_lbl), "%s %s (%s%%)",
-                         (parts[0][0] == '*') ? "✓" : "  ",
-                         parts[1],
-                         parts[2] ? parts[2] : "?");
-                GtkWidget *btn = gtk_button_new_with_label(row_lbl);
-                gtk_style_context_add_class(gtk_widget_get_style_context(btn), "win95-menuitem");
-                g_signal_connect_data(btn, "clicked", G_CALLBACK(on_wifi_connect_clicked),
-                                      g_strdup(parts[1]), free_closure_str, 0);
-                gtk_box_pack_start(GTK_BOX(g_tb.net_wifi_list_box), btn, FALSE, FALSE, 0);
-                shown++;
-            }
-            g_strfreev(parts);
-        }
-        g_strfreev(lines);
-        g_free(wifi_out);
-    }
-    gtk_widget_show_all(g_tb.net_wifi_list_box);
-}
-
-static void toggle_network_popup(GdkMonitor *mon) {
-    if (!g_tb.net_popup) {
-        g_tb.net_popup = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-        gtk_window_set_decorated(GTK_WINDOW(g_tb.net_popup), FALSE);
-        gtk_style_context_add_class(gtk_widget_get_style_context(g_tb.net_popup), "win95-outset");
-        if (gtk_layer_is_supported()) {
-            gtk_layer_init_for_window(GTK_WINDOW(g_tb.net_popup));
-            gtk_layer_set_layer(GTK_WINDOW(g_tb.net_popup), GTK_LAYER_SHELL_LAYER_OVERLAY);
-            gtk_layer_set_anchor(GTK_WINDOW(g_tb.net_popup), GTK_LAYER_SHELL_EDGE_BOTTOM, TRUE);
-            gtk_layer_set_anchor(GTK_WINDOW(g_tb.net_popup), GTK_LAYER_SHELL_EDGE_RIGHT, TRUE);
-            gtk_layer_set_margin(GTK_WINDOW(g_tb.net_popup), GTK_LAYER_SHELL_EDGE_BOTTOM, 28);
-            gtk_layer_set_margin(GTK_WINDOW(g_tb.net_popup), GTK_LAYER_SHELL_EDGE_RIGHT, 20);
-            gtk_layer_set_namespace(GTK_WINDOW(g_tb.net_popup), "chicago-net-popup");
-        }
-
-        GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-        gtk_container_set_border_width(GTK_CONTAINER(vbox), 8);
-        gtk_widget_set_size_request(vbox, 240, -1);
-
-        GtkWidget *hdr = gtk_label_new(NULL);
-        gtk_label_set_markup(GTK_LABEL(hdr), "<b>Network &amp; Dial-Up Connections</b>");
-        gtk_label_set_xalign(GTK_LABEL(hdr), 0.0f);
-        gtk_box_pack_start(GTK_BOX(vbox), hdr, FALSE, FALSE, 0);
-
-        g_tb.net_status_lbl = gtk_label_new("Checking network...");
-        gtk_label_set_xalign(GTK_LABEL(g_tb.net_status_lbl), 0.0f);
-        gtk_box_pack_start(GTK_BOX(vbox), g_tb.net_status_lbl, FALSE, FALSE, 0);
-
-        GtkWidget *well = gtk_frame_new("Available Wireless Networks");
-        g_tb.net_wifi_list_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1);
-        gtk_container_set_border_width(GTK_CONTAINER(g_tb.net_wifi_list_box), 4);
-        gtk_container_add(GTK_CONTAINER(well), g_tb.net_wifi_list_box);
-        gtk_box_pack_start(GTK_BOX(vbox), well, TRUE, TRUE, 0);
-
-        GtkWidget *prop_btn = gtk_button_new_with_label("Network Properties...");
-        g_signal_connect_data(prop_btn, "clicked", G_CALLBACK(on_launch_cmd_btn),
-                              g_strdup("chicago-control-panel --network"), free_closure_str, 0);
-        gtk_box_pack_start(GTK_BOX(vbox), prop_btn, FALSE, FALSE, 0);
-
-        gtk_container_add(GTK_CONTAINER(g_tb.net_popup), vbox);
-    }
-
-    if (gtk_widget_get_visible(g_tb.net_popup)) {
-        gtk_widget_hide(g_tb.net_popup);
-    } else {
-        hide_all_popups();
-        refresh_network_popup_contents();
-        if (gtk_layer_is_supported() && mon) {
-            gtk_layer_set_monitor(GTK_WINDOW(g_tb.net_popup), mon);
-        }
-        gtk_widget_show_all(g_tb.net_popup);
-    }
-}
-
-static void on_pwr_brightness_changed(GtkRange *range, gpointer data) {
+static void on_cc_mic_scale_changed(GtkRange *range, gpointer data) {
     (void)data;
-    if (g_tb.pwr_updating) return;
+    if (g_tb.cc_updating) return;
+    int val = CLAMP((int)gtk_range_get_value(range), 0, 100);
+    g_tb.cached_mic_vol = val;
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd), "wpctl set-volume @DEFAULT_AUDIO_SOURCE@ %d%%", val);
+    chicago_spawn_command(cmd);
+    update_tray_indicators(FALSE);
+}
+
+static void on_cc_mic_mute_toggled(GtkToggleButton *tb, gpointer data) {
+    (void)data;
+    if (g_tb.cc_updating) return;
+    gboolean muted = gtk_toggle_button_get_active(tb);
+    g_tb.cached_mic_muted = muted;
+    chicago_spawn_command(muted ? "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ 1" : "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ 0");
+    update_tray_indicators(FALSE);
+}
+
+static void on_cc_bright_scale_changed(GtkRange *range, gpointer data) {
+    (void)data;
+    if (g_tb.cc_updating) return;
     int pct = CLAMP((int)gtk_range_get_value(range), 5, 100);
     char cmd[128];
     snprintf(cmd, sizeof(cmd), "brightnessctl set %d%%", pct);
     chicago_spawn_command(cmd);
 }
 
-static void on_pwr_profile_clicked(GtkButton *btn, gpointer data) {
-    (void)btn;
-    const char *prof = (const char *)data;
-    char cmd[128];
-    snprintf(cmd, sizeof(cmd), "powerprofilesctl set %s", prof);
+static void on_cc_sync_monitors_clicked(GtkButton *btn, gpointer data) {
+    (void)btn; (void)data;
+    int pct = g_tb.cc_bright_scale ? CLAMP((int)gtk_range_get_value(GTK_RANGE(g_tb.cc_bright_scale)), 5, 100)
+                                   : get_current_brightness_pct();
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "python3 \"%s/.config/hypr/scripts/brightness-sync.py\" set %d", g_get_home_dir(), pct);
     chicago_spawn_command(cmd);
 }
 
-static void toggle_power_popup(GdkMonitor *mon) {
-    if (!g_tb.pwr_popup) {
-        g_tb.pwr_popup = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-        gtk_window_set_decorated(GTK_WINDOW(g_tb.pwr_popup), FALSE);
-        gtk_style_context_add_class(gtk_widget_get_style_context(g_tb.pwr_popup), "win95-outset");
-        if (gtk_layer_is_supported()) {
-            gtk_layer_init_for_window(GTK_WINDOW(g_tb.pwr_popup));
-            gtk_layer_set_layer(GTK_WINDOW(g_tb.pwr_popup), GTK_LAYER_SHELL_LAYER_OVERLAY);
-            gtk_layer_set_anchor(GTK_WINDOW(g_tb.pwr_popup), GTK_LAYER_SHELL_EDGE_BOTTOM, TRUE);
-            gtk_layer_set_anchor(GTK_WINDOW(g_tb.pwr_popup), GTK_LAYER_SHELL_EDGE_RIGHT, TRUE);
-            gtk_layer_set_margin(GTK_WINDOW(g_tb.pwr_popup), GTK_LAYER_SHELL_EDGE_BOTTOM, 28);
-            gtk_layer_set_margin(GTK_WINDOW(g_tb.pwr_popup), GTK_LAYER_SHELL_EDGE_RIGHT, 12);
-            gtk_layer_set_namespace(GTK_WINDOW(g_tb.pwr_popup), "chicago-pwr-popup");
+static void on_cc_toggle_wifi_clicked(GtkButton *btn, gpointer data) {
+    (void)btn; (void)data;
+    gboolean has_eth = FALSE, has_wifi = FALSE;
+    read_network_sysfs(&has_eth, &has_wifi, NULL, 0, NULL, 0);
+    chicago_spawn_command(has_wifi ? "nmcli radio wifi off" : "nmcli radio wifi on");
+    g_timeout_add(600, on_deferred_cc_refresh, NULL);
+}
+
+static void on_cc_toggle_bt_clicked(GtkButton *btn, gpointer data) {
+    (void)btn; (void)data;
+    gboolean bt_en = TRUE, bt_conn = FALSE;
+    read_bluetooth_sysfs(&bt_en, &bt_conn);
+    if (bt_en) {
+        chicago_spawn_command("bluetoothctl power off; rfkill block bluetooth");
+    } else {
+        chicago_spawn_command("rfkill unblock bluetooth; bluetoothctl power on");
+    }
+    g_timeout_add(600, on_deferred_cc_refresh, NULL);
+}
+
+static void on_cc_toggle_prof_clicked(GtkButton *btn, gpointer data) {
+    (void)btn; (void)data;
+    cycle_power_profile();
+    g_timeout_add(450, on_deferred_cc_refresh, NULL);
+}
+
+static void on_cc_toggle_caffeine_clicked(GtkButton *btn, gpointer data) {
+    (void)btn; (void)data;
+    g_tb.caffeine_active = !g_tb.caffeine_active;
+    if (g_tb.caffeine_active) {
+        chicago_spawn_command("pkill -STOP -x swayidle 2>/dev/null || true");
+    } else {
+        chicago_spawn_command("pkill -CONT -x swayidle 2>/dev/null || true");
+    }
+    refresh_control_center_contents();
+}
+
+static void on_wifi_connect_clicked(GtkButton *btn, gpointer data) {
+    (void)btn;
+    const char *ssid = (const char *)data;
+    if (!ssid || !*ssid) return;
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "nmcli device wifi connect \"%s\" || chicago-control-panel --network", ssid);
+    chicago_spawn_command(cmd);
+    g_timeout_add(1500, on_deferred_cc_refresh, NULL);
+}
+
+static void on_cc_wifi_rescan_clicked(GtkButton *btn, gpointer data) {
+    (void)btn; (void)data;
+    chicago_spawn_command("nmcli device wifi rescan");
+    g_timeout_add(1200, on_deferred_cc_refresh, NULL);
+}
+
+static void on_bt_device_clicked(GtkButton *btn, gpointer data) {
+    (void)btn;
+    const char *spec = (const char *)data;
+    if (!spec || !*spec) return;
+    /* spec format: "1:XX:XX:XX:XX:XX:XX" (connected) or "0:XX:XX:XX:XX:XX:XX" (disconnected) */
+    gboolean is_conn = (spec[0] == '1');
+    const char *mac = spec + 2;
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "rfkill unblock bluetooth; bluetoothctl power on; bluetoothctl %s %s",
+             is_conn ? "disconnect" : "connect", mac);
+    chicago_spawn_command(cmd);
+    g_timeout_add(1500, on_deferred_cc_refresh, NULL);
+}
+
+static void on_cc_bt_scan_clicked(GtkButton *btn, gpointer data) {
+    (void)btn; (void)data;
+    chicago_spawn_command("rfkill unblock bluetooth; bluetoothctl power on; bluetoothctl --timeout 5 scan on");
+    g_timeout_add(2500, on_deferred_cc_refresh, NULL);
+}
+
+static void on_audio_sink_clicked(GtkButton *btn, gpointer data) {
+    (void)btn;
+    int sink_id = GPOINTER_TO_INT(data);
+    if (sink_id <= 0) return;
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd), "wpctl set-default %d", sink_id);
+    chicago_spawn_command(cmd);
+    g_timeout_add(250, on_deferred_cc_refresh, NULL);
+}
+
+static void on_cc_set_profile_btn(GtkButton *btn, gpointer data) {
+    (void)btn;
+    const char *prof = (const char *)data;
+    set_power_profile_with_governor_fix(prof);
+    g_timeout_add(400, on_deferred_cc_refresh, NULL);
+}
+
+static void refresh_control_center_contents(void) {
+    if (!g_tb.cc_popup) return;
+    g_tb.cc_updating = TRUE;
+
+    int bat_pct = 100;
+    gboolean bat_charging = FALSE;
+    double bat_watts = 0.0;
+    char bat_status[64] = "Online";
+    read_battery_sysfs(&bat_pct, &bat_charging, &bat_watts, bat_status, sizeof(bat_status));
+
+    char prof[64] = "balanced";
+    read_power_profile_sysfs(prof, sizeof(prof));
+
+    gboolean has_eth = FALSE, has_wifi = FALSE;
+    char eth_dev[64] = "", wifi_dev[64] = "";
+    read_network_sysfs(&has_eth, &has_wifi, eth_dev, sizeof(eth_dev), wifi_dev, sizeof(wifi_dev));
+
+    gboolean bt_en = TRUE, bt_conn = FALSE;
+    read_bluetooth_sysfs(&bt_en, &bt_conn);
+
+    /* 1. Header System Stats (Uptime, Load, Battery, Profile) */
+    if (g_tb.cc_sysstats_lbl) {
+        char *up_s = NULL, *ld_s = NULL;
+        int up_hr = 0, up_min = 0;
+        if (g_file_get_contents("/proc/uptime", &up_s, NULL, NULL) && up_s) {
+            long secs = (long)g_ascii_strtod(up_s, NULL);
+            up_hr = (int)(secs / 3600);
+            up_min = (int)((secs % 3600) / 60);
+            g_free(up_s);
         }
-
-        GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-        gtk_container_set_border_width(GTK_CONTAINER(vbox), 8);
-        gtk_widget_set_size_request(vbox, 230, -1);
-
-        GtkWidget *hdr = gtk_label_new(NULL);
-        gtk_label_set_markup(GTK_LABEL(hdr), "<b>Power Meter &amp; Display Brightness</b>");
-        gtk_label_set_xalign(GTK_LABEL(hdr), 0.0f);
-        gtk_box_pack_start(GTK_BOX(vbox), hdr, FALSE, FALSE, 0);
-
-        g_tb.pwr_status_lbl = gtk_label_new("Battery: Checking...");
-        gtk_label_set_xalign(GTK_LABEL(g_tb.pwr_status_lbl), 0.0f);
-        gtk_box_pack_start(GTK_BOX(vbox), g_tb.pwr_status_lbl, FALSE, FALSE, 0);
-
-        GtkWidget *br_lbl = gtk_label_new("Screen Brightness (%):");
-        gtk_label_set_xalign(GTK_LABEL(br_lbl), 0.0f);
-        gtk_box_pack_start(GTK_BOX(vbox), br_lbl, FALSE, FALSE, 0);
-
-        g_tb.pwr_bright_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 5, 100, 5);
-        g_signal_connect(g_tb.pwr_bright_scale, "value-changed", G_CALLBACK(on_pwr_brightness_changed), NULL);
-        gtk_box_pack_start(GTK_BOX(vbox), g_tb.pwr_bright_scale, FALSE, FALSE, 0);
-
-        GtkWidget *prof_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
-        GtkWidget *b1 = gtk_button_new_with_label("Saver");
-        GtkWidget *b2 = gtk_button_new_with_label("Balanced");
-        GtkWidget *b3 = gtk_button_new_with_label("Perf");
-        g_signal_connect(b1, "clicked", G_CALLBACK(on_pwr_profile_clicked), (gpointer)"power-saver");
-        g_signal_connect(b2, "clicked", G_CALLBACK(on_pwr_profile_clicked), (gpointer)"balanced");
-        g_signal_connect(b3, "clicked", G_CALLBACK(on_pwr_profile_clicked), (gpointer)"performance");
-        gtk_box_pack_start(GTK_BOX(prof_box), b1, TRUE, TRUE, 0);
-        gtk_box_pack_start(GTK_BOX(prof_box), b2, TRUE, TRUE, 0);
-        gtk_box_pack_start(GTK_BOX(prof_box), b3, TRUE, TRUE, 0);
-        gtk_box_pack_start(GTK_BOX(vbox), prof_box, FALSE, FALSE, 0);
-
-        GtkWidget *prop_btn = gtk_button_new_with_label("Power Properties...");
-        g_signal_connect_data(prop_btn, "clicked", G_CALLBACK(on_launch_cmd_btn),
-                              g_strdup("chicago-control-panel --power"), free_closure_str, 0);
-        gtk_box_pack_start(GTK_BOX(vbox), prop_btn, FALSE, FALSE, 0);
-
-        gtk_container_add(GTK_CONTAINER(g_tb.pwr_popup), vbox);
+        double load1 = 0.0;
+        if (g_file_get_contents("/proc/loadavg", &ld_s, NULL, NULL) && ld_s) {
+            load1 = g_ascii_strtod(ld_s, NULL);
+            g_free(ld_s);
+        }
+        char stats_txt[320];
+        snprintf(stats_txt, sizeof(stats_txt),
+                 "Battery: %d%% (%s, %.1f W)  |  Profile: %s  |  Uptime: %dh %02dm (Load %.2f)",
+                 bat_pct, bat_status, bat_watts, prof, up_hr, up_min, load1);
+        gtk_label_set_text(GTK_LABEL(g_tb.cc_sysstats_lbl), stats_txt);
     }
 
-    if (gtk_widget_get_visible(g_tb.pwr_popup)) {
-        gtk_widget_hide(g_tb.pwr_popup);
+    /* 2. Quick Sliders */
+    gboolean v_muted = FALSE, m_muted = FALSE;
+    int vol = get_current_volume(&v_muted);
+    int mic = get_current_mic_volume(&m_muted);
+    g_tb.cached_vol = vol;
+    g_tb.cached_vol_muted = v_muted;
+    g_tb.cached_mic_vol = mic;
+    g_tb.cached_mic_muted = m_muted;
+
+    if (g_tb.cc_vol_scale)    gtk_range_set_value(GTK_RANGE(g_tb.cc_vol_scale), vol);
+    if (g_tb.cc_vol_mute_chk) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_tb.cc_vol_mute_chk), v_muted);
+    if (g_tb.cc_mic_scale)    gtk_range_set_value(GTK_RANGE(g_tb.cc_mic_scale), mic);
+    if (g_tb.cc_mic_mute_chk) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_tb.cc_mic_mute_chk), m_muted);
+    if (g_tb.cc_bright_scale) gtk_range_set_value(GTK_RANGE(g_tb.cc_bright_scale), get_current_brightness_pct());
+
+    /* 3. Quick Toggles 2x3 Grid Labels */
+    if (g_tb.cc_wifi_toggle_btn) {
+        gtk_button_set_label(GTK_BUTTON(g_tb.cc_wifi_toggle_btn), has_wifi ? "Wi-Fi: ON" : "Wi-Fi: OFF");
+    }
+    if (g_tb.cc_bt_toggle_btn) {
+        gtk_button_set_label(GTK_BUTTON(g_tb.cc_bt_toggle_btn),
+                             !bt_en ? "Bluetooth: OFF" : (bt_conn ? "BT: Connected" : "Bluetooth: ON"));
+    }
+    if (g_tb.cc_prof_toggle_btn) {
+        char plbl[64];
+        if (strcmp(prof, "power-saver") == 0) snprintf(plbl, sizeof(plbl), "Mode: Saver 🍃");
+        else if (strcmp(prof, "performance") == 0) snprintf(plbl, sizeof(plbl), "Mode: Perf 🔥");
+        else snprintf(plbl, sizeof(plbl), "Mode: Balanced");
+        gtk_button_set_label(GTK_BUTTON(g_tb.cc_prof_toggle_btn), plbl);
+    }
+    if (g_tb.cc_caffeine_toggle_btn) {
+        gtk_button_set_label(GTK_BUTTON(g_tb.cc_caffeine_toggle_btn),
+                             g_tb.caffeine_active ? "Awake: ON ☕" : "Awake: OFF");
+    }
+
+    /* 4. Tab 0: Wi-Fi & LAN */
+    if (g_tb.cc_net_status_lbl && g_tb.cc_wifi_list_box) {
+        char net_summary[512];
+        if (has_eth && has_wifi) {
+            snprintf(net_summary, sizeof(net_summary), "Wired LAN: %s (Up)  +  Wi-Fi: %s (Up)", eth_dev, wifi_dev);
+        } else if (has_eth) {
+            snprintf(net_summary, sizeof(net_summary), "Wired LAN: %s (Connected)", eth_dev);
+        } else if (has_wifi) {
+            snprintf(net_summary, sizeof(net_summary), "Wireless LAN: %s (Connected)", wifi_dev);
+        } else {
+            snprintf(net_summary, sizeof(net_summary), "Status: Disconnected");
+        }
+        gtk_label_set_text(GTK_LABEL(g_tb.cc_net_status_lbl), net_summary);
+
+        clear_container(g_tb.cc_wifi_list_box);
+        char *wifi_out = NULL;
+        if (g_spawn_command_line_sync("nmcli -t -f IN-USE,SSID,SIGNAL,SECURITY dev wifi list --rescan no", &wifi_out, NULL, NULL, NULL) && wifi_out) {
+            char **lines = g_strsplit(wifi_out, "\n", -1);
+            int shown = 0;
+            for (int i = 0; lines[i] && shown < 10; i++) {
+                char **parts = g_strsplit(lines[i], ":", 4);
+                if (parts[0] && parts[1] && parts[1][0] != '\0') {
+                    char row_lbl[256];
+                    snprintf(row_lbl, sizeof(row_lbl), "%s %s (%s%%, %s)",
+                             (parts[0][0] == '*') ? "✓ [Active]" : "   ",
+                             parts[1],
+                             parts[2] ? parts[2] : "?",
+                             (parts[3] && parts[3][0]) ? parts[3] : "Open");
+                    GtkWidget *btn = gtk_button_new_with_label(row_lbl);
+                    gtk_style_context_add_class(gtk_widget_get_style_context(btn), "win95-menuitem");
+                    g_signal_connect_data(btn, "clicked", G_CALLBACK(on_wifi_connect_clicked),
+                                          g_strdup(parts[1]), free_closure_str, 0);
+                    gtk_box_pack_start(GTK_BOX(g_tb.cc_wifi_list_box), btn, FALSE, FALSE, 0);
+                    shown++;
+                }
+                g_strfreev(parts);
+            }
+            g_strfreev(lines);
+            g_free(wifi_out);
+        }
+        gtk_widget_show_all(g_tb.cc_wifi_list_box);
+    }
+
+    /* 5. Tab 1: Bluetooth Devices */
+    if (g_tb.cc_bt_status_lbl && g_tb.cc_bt_list_box) {
+        gtk_label_set_text(GTK_LABEL(g_tb.cc_bt_status_lbl),
+                           !bt_en ? "Controller: Powered Off" : (bt_conn ? "Controller: Powered On (Active Audio/HID)" : "Controller: Powered On (Standby)"));
+        clear_container(g_tb.cc_bt_list_box);
+
+        char *bt_devs = NULL, *bt_conn_out = NULL;
+        g_spawn_command_line_sync("bluetoothctl devices", &bt_devs, NULL, NULL, NULL);
+        g_spawn_command_line_sync("bluetoothctl devices Connected", &bt_conn_out, NULL, NULL, NULL);
+        if (bt_devs) {
+            char **lines = g_strsplit(bt_devs, "\n", -1);
+            int count = 0;
+            for (int i = 0; lines[i]; i++) {
+                if (g_str_has_prefix(lines[i], "Device ") && strlen(lines[i]) > 25) {
+                    char mac[20];
+                    memcpy(mac, lines[i] + 7, 17);
+                    mac[17] = '\0';
+                    const char *dname = lines[i] + 25;
+                    gboolean is_c = (bt_conn_out && strstr(bt_conn_out, mac) != NULL);
+
+                    char row_lbl[320];
+                    snprintf(row_lbl, sizeof(row_lbl), "%s %s (%s)",
+                             is_c ? "✓ [Connected]" : "   [Paired]", dname, mac);
+                    GtkWidget *btn = gtk_button_new_with_label(row_lbl);
+                    gtk_style_context_add_class(gtk_widget_get_style_context(btn), "win95-menuitem");
+
+                    char *spec = g_strdup_printf("%d:%s", is_c ? 1 : 0, mac);
+                    g_signal_connect_data(btn, "clicked", G_CALLBACK(on_bt_device_clicked),
+                                          spec, free_closure_str, 0);
+                    gtk_box_pack_start(GTK_BOX(g_tb.cc_bt_list_box), btn, FALSE, FALSE, 0);
+                    count++;
+                }
+            }
+            if (count == 0) {
+                gtk_box_pack_start(GTK_BOX(g_tb.cc_bt_list_box),
+                                   gtk_label_new("No paired Bluetooth devices found."), FALSE, FALSE, 4);
+            }
+            g_strfreev(lines);
+        }
+        g_free(bt_devs);
+        g_free(bt_conn_out);
+        gtk_widget_show_all(g_tb.cc_bt_list_box);
+    }
+
+    /* 6. Tab 2: PipeWire Audio Sinks (from wpctl status) */
+    if (g_tb.cc_audio_sinks_box) {
+        clear_container(g_tb.cc_audio_sinks_box);
+        char *wp_out = NULL;
+        if (g_spawn_command_line_sync("wpctl status", &wp_out, NULL, NULL, NULL) && wp_out) {
+            char **lines = g_strsplit(wp_out, "\n", -1);
+            gboolean in_audio = FALSE, in_sinks = FALSE;
+            int sink_count = 0;
+            for (int i = 0; lines[i]; i++) {
+                const char *ln = lines[i];
+                if (g_str_has_prefix(ln, "Audio")) {
+                    in_audio = TRUE;
+                    continue;
+                }
+                if (g_str_has_prefix(ln, "Video") || g_str_has_prefix(ln, "Settings")) {
+                    in_audio = FALSE;
+                    in_sinks = FALSE;
+                    continue;
+                }
+                if (in_audio && strstr(ln, "Sinks:") != NULL) {
+                    in_sinks = TRUE;
+                    continue;
+                }
+                if (in_sinks && (strstr(ln, "Sources:") != NULL ||
+                                 strstr(ln, "Sink endpoints:") != NULL ||
+                                 strstr(ln, "Streams:") != NULL ||
+                                 strstr(ln, "Filters:") != NULL)) {
+                    in_sinks = FALSE;
+                    continue;
+                }
+                if (in_sinks) {
+                    gboolean is_def = (strchr(ln, '*') != NULL);
+                    const char *p = ln;
+                    while (*p && !g_ascii_isdigit(*p)) p++;
+                    if (g_ascii_isdigit(*p)) {
+                        int sink_id = atoi(p);
+                        const char *dot = strchr(p, '.');
+                        if (dot && sink_id > 0) {
+                            const char *name_start = dot + 1;
+                            while (*name_start == ' ') name_start++;
+                            char sname[256];
+                            g_strlcpy(sname, name_start, sizeof(sname));
+                            char *vol_brk = strstr(sname, "[vol:");
+                            if (vol_brk) *vol_brk = '\0';
+                            g_strstrip(sname);
+
+                            char row_lbl[320];
+                            snprintf(row_lbl, sizeof(row_lbl), "%s %s (ID %d)",
+                                     is_def ? "✓ [Default Output]" : "   ", sname, sink_id);
+                            GtkWidget *btn = gtk_button_new_with_label(row_lbl);
+                            gtk_style_context_add_class(gtk_widget_get_style_context(btn), "win95-menuitem");
+                            g_signal_connect(btn, "clicked", G_CALLBACK(on_audio_sink_clicked),
+                                             GINT_TO_POINTER(sink_id));
+                            gtk_box_pack_start(GTK_BOX(g_tb.cc_audio_sinks_box), btn, FALSE, FALSE, 0);
+                            sink_count++;
+                        }
+                    }
+                }
+            }
+            if (sink_count == 0) {
+                gtk_box_pack_start(GTK_BOX(g_tb.cc_audio_sinks_box),
+                                   gtk_label_new("No PipeWire audio sinks detected."), FALSE, FALSE, 4);
+            }
+            g_strfreev(lines);
+            g_free(wp_out);
+        }
+        gtk_widget_show_all(g_tb.cc_audio_sinks_box);
+    }
+
+    /* 7. Tab 3: Battery & Power Profile Details */
+    if (g_tb.cc_pwr_detail_lbl) {
+        char pwr_info[512];
+        snprintf(pwr_info, sizeof(pwr_info),
+                 "Battery Capacity: %d%%\n"
+                 "Charging State: %s\n"
+                 "Live Power Draw: %.2f Watts\n"
+                 "Active ACPI Platform Profile: %s",
+                 bat_pct, bat_status, bat_watts, prof);
+        gtk_label_set_text(GTK_LABEL(g_tb.cc_pwr_detail_lbl), pwr_info);
+    }
+
+    g_tb.cc_updating = FALSE;
+}
+
+static GtkWidget *make_profile_choice_btn(const char *label_text, const char *prof_key) {
+    GtkWidget *btn = gtk_button_new();
+    GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GdkPixbuf *pb = chicago_draw_power_profile_pixbuf(prof_key, 16);
+    GtkWidget *img = gtk_image_new_from_pixbuf(pb);
+    if (pb) g_object_unref(pb);
+    GtkWidget *lbl = gtk_label_new(label_text);
+    gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
+    gtk_box_pack_start(GTK_BOX(hbox), img, FALSE, FALSE, 2);
+    gtk_box_pack_start(GTK_BOX(hbox), lbl, TRUE, TRUE, 2);
+    gtk_container_add(GTK_CONTAINER(btn), hbox);
+    g_signal_connect(btn, "clicked", G_CALLBACK(on_cc_set_profile_btn), (gpointer)prof_key);
+    return btn;
+}
+
+static GdkMonitor *get_active_or_pointer_monitor(void) {
+    GdkDisplay *dpy = gdk_display_get_default();
+    if (!dpy) return NULL;
+    GdkSeat *seat = gdk_display_get_default_seat(dpy);
+    if (seat) {
+        GdkDevice *ptr = gdk_seat_get_pointer(seat);
+        if (ptr) {
+            int x = 0, y = 0;
+            gdk_device_get_position(ptr, NULL, &x, &y);
+            GdkMonitor *m = gdk_display_get_monitor_at_point(dpy, x, y);
+            if (m) return m;
+        }
+    }
+    return (g_tb.bar_count > 0) ? g_tb.bars[0].monitor : NULL;
+}
+
+static void toggle_control_center_popup(GdkMonitor *mon, int initial_tab) {
+    if (!mon) mon = get_active_or_pointer_monitor();
+
+    if (!g_tb.cc_popup) {
+        g_tb.cc_popup = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+        gtk_window_set_decorated(GTK_WINDOW(g_tb.cc_popup), FALSE);
+        gtk_style_context_add_class(gtk_widget_get_style_context(g_tb.cc_popup), "win95-outset");
+        if (gtk_layer_is_supported()) {
+            gtk_layer_init_for_window(GTK_WINDOW(g_tb.cc_popup));
+            gtk_layer_set_layer(GTK_WINDOW(g_tb.cc_popup), GTK_LAYER_SHELL_LAYER_OVERLAY);
+            gtk_layer_set_anchor(GTK_WINDOW(g_tb.cc_popup), GTK_LAYER_SHELL_EDGE_BOTTOM, TRUE);
+            gtk_layer_set_anchor(GTK_WINDOW(g_tb.cc_popup), GTK_LAYER_SHELL_EDGE_RIGHT, TRUE);
+            gtk_layer_set_margin(GTK_WINDOW(g_tb.cc_popup), GTK_LAYER_SHELL_EDGE_BOTTOM, 28);
+            gtk_layer_set_margin(GTK_WINDOW(g_tb.cc_popup), GTK_LAYER_SHELL_EDGE_RIGHT, 2);
+            gtk_layer_set_keyboard_mode(GTK_WINDOW(g_tb.cc_popup), GTK_LAYER_SHELL_KEYBOARD_MODE_ON_DEMAND);
+            gtk_layer_set_namespace(GTK_WINDOW(g_tb.cc_popup), "chicago-control-center");
+        }
+
+        GtkWidget *root_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+        gtk_container_set_border_width(GTK_CONTAINER(root_vbox), 5);
+        gtk_widget_set_size_request(root_vbox, 360, -1);
+
+        /* 1. Classic Windows 95 #000080 Navy Titlebar with Quick Session Actions */
+        GtkWidget *title_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+        gtk_style_context_add_class(gtk_widget_get_style_context(title_bar), "win95-titlebar");
+        GdkPixbuf *cp_pb = chicago_load_icon("preferences-system", 16);
+        if (cp_pb) {
+            gtk_box_pack_start(GTK_BOX(title_bar), gtk_image_new_from_pixbuf(cp_pb), FALSE, FALSE, 2);
+            g_object_unref(cp_pb);
+        }
+        GtkWidget *title_lbl = gtk_label_new(NULL);
+        gtk_label_set_markup(GTK_LABEL(title_lbl), "<span foreground='#ffffff'><b>Windows 95 Control Center</b></span>");
+        gtk_label_set_xalign(GTK_LABEL(title_lbl), 0.0f);
+        gtk_box_pack_start(GTK_BOX(title_bar), title_lbl, TRUE, TRUE, 2);
+
+        GtkWidget *close_btn = gtk_button_new_with_label("×");
+        g_signal_connect_swapped(close_btn, "clicked", G_CALLBACK(gtk_widget_hide), g_tb.cc_popup);
+        gtk_box_pack_end(GTK_BOX(title_bar), close_btn, FALSE, FALSE, 1);
+        gtk_box_pack_start(GTK_BOX(root_vbox), title_bar, FALSE, FALSE, 0);
+
+        /* Quick Session Bar (Lock, Control Panel, Reload WM, Shut Down) */
+        GtkWidget *sess_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 3);
+        GtkWidget *btn_lock = gtk_button_new_with_label("Lock");
+        GtkWidget *btn_cp   = gtk_button_new_with_label("Control Panel");
+        GtkWidget *btn_rel  = gtk_button_new_with_label("Reload WM");
+        GtkWidget *btn_shut = gtk_button_new_with_label("Shut Down...");
+        g_signal_connect_data(btn_lock, "clicked", G_CALLBACK(on_launch_cmd_btn), g_strdup("chicago-lock"), free_closure_str, 0);
+        g_signal_connect_data(btn_cp,   "clicked", G_CALLBACK(on_launch_cmd_btn), g_strdup("chicago-control-panel"), free_closure_str, 0);
+        g_signal_connect_data(btn_rel,  "clicked", G_CALLBACK(on_launch_cmd_btn), g_strdup("labwc -r"), free_closure_str, 0);
+        g_signal_connect_data(btn_shut, "clicked", G_CALLBACK(on_launch_cmd_btn), g_strdup("chicago-control-panel --shutdown"), free_closure_str, 0);
+        gtk_box_pack_start(GTK_BOX(sess_hbox), btn_lock, TRUE, TRUE, 0);
+        gtk_box_pack_start(GTK_BOX(sess_hbox), btn_cp,   TRUE, TRUE, 0);
+        gtk_box_pack_start(GTK_BOX(sess_hbox), btn_rel,  TRUE, TRUE, 0);
+        gtk_box_pack_start(GTK_BOX(sess_hbox), btn_shut, TRUE, TRUE, 0);
+        gtk_box_pack_start(GTK_BOX(root_vbox), sess_hbox, FALSE, FALSE, 0);
+
+        /* 2. Live System Telemetry Sunken Well */
+        GtkWidget *stats_well = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+        gtk_style_context_add_class(gtk_widget_get_style_context(stats_well), "win95-well");
+        g_tb.cc_sysstats_lbl = gtk_label_new("Checking system telemetry...");
+        gtk_label_set_xalign(GTK_LABEL(g_tb.cc_sysstats_lbl), 0.0f);
+        gtk_box_pack_start(GTK_BOX(stats_well), g_tb.cc_sysstats_lbl, TRUE, TRUE, 4);
+        gtk_box_pack_start(GTK_BOX(root_vbox), stats_well, FALSE, FALSE, 0);
+
+        /* 3. Quick Sliders Frame (Volume, Microphone, Multi-Monitor Brightness) */
+        GtkWidget *sliders_frame = gtk_frame_new("Audio & Display Sliders");
+        GtkWidget *sliders_grid = gtk_grid_new();
+        gtk_grid_set_row_spacing(GTK_GRID(sliders_grid), 4);
+        gtk_grid_set_column_spacing(GTK_GRID(sliders_grid), 6);
+        gtk_container_set_border_width(GTK_CONTAINER(sliders_grid), 6);
+
+        GtkWidget *lbl_vol = gtk_label_new("Speaker:");
+        gtk_label_set_xalign(GTK_LABEL(lbl_vol), 0.0f);
+        g_tb.cc_vol_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 100, 2);
+        gtk_scale_set_value_pos(GTK_SCALE(g_tb.cc_vol_scale), GTK_POS_RIGHT);
+        gtk_widget_set_hexpand(g_tb.cc_vol_scale, TRUE);
+        g_signal_connect(g_tb.cc_vol_scale, "value-changed", G_CALLBACK(on_cc_vol_scale_changed), NULL);
+        g_tb.cc_vol_mute_chk = gtk_check_button_new_with_label("Mute");
+        g_signal_connect(g_tb.cc_vol_mute_chk, "toggled", G_CALLBACK(on_cc_vol_mute_toggled), NULL);
+        gtk_grid_attach(GTK_GRID(sliders_grid), lbl_vol, 0, 0, 1, 1);
+        gtk_grid_attach(GTK_GRID(sliders_grid), g_tb.cc_vol_scale, 1, 0, 1, 1);
+        gtk_grid_attach(GTK_GRID(sliders_grid), g_tb.cc_vol_mute_chk, 2, 0, 1, 1);
+
+        GtkWidget *lbl_mic = gtk_label_new("Mic In:");
+        gtk_label_set_xalign(GTK_LABEL(lbl_mic), 0.0f);
+        g_tb.cc_mic_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 100, 2);
+        gtk_scale_set_value_pos(GTK_SCALE(g_tb.cc_mic_scale), GTK_POS_RIGHT);
+        gtk_widget_set_hexpand(g_tb.cc_mic_scale, TRUE);
+        g_signal_connect(g_tb.cc_mic_scale, "value-changed", G_CALLBACK(on_cc_mic_scale_changed), NULL);
+        g_tb.cc_mic_mute_chk = gtk_check_button_new_with_label("Mute");
+        g_signal_connect(g_tb.cc_mic_mute_chk, "toggled", G_CALLBACK(on_cc_mic_mute_toggled), NULL);
+        gtk_grid_attach(GTK_GRID(sliders_grid), lbl_mic, 0, 1, 1, 1);
+        gtk_grid_attach(GTK_GRID(sliders_grid), g_tb.cc_mic_scale, 1, 1, 1, 1);
+        gtk_grid_attach(GTK_GRID(sliders_grid), g_tb.cc_mic_mute_chk, 2, 1, 1, 1);
+
+        GtkWidget *lbl_br = gtk_label_new("Backlight:");
+        gtk_label_set_xalign(GTK_LABEL(lbl_br), 0.0f);
+        g_tb.cc_bright_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 5, 100, 5);
+        gtk_scale_set_value_pos(GTK_SCALE(g_tb.cc_bright_scale), GTK_POS_RIGHT);
+        gtk_widget_set_hexpand(g_tb.cc_bright_scale, TRUE);
+        g_signal_connect(g_tb.cc_bright_scale, "value-changed", G_CALLBACK(on_cc_bright_scale_changed), NULL);
+        GtkWidget *sync_btn = gtk_button_new_with_label("Sync DDC");
+        gtk_widget_set_tooltip_text(sync_btn, "Sync External HP Monitors via DDC/CI (brightness-sync.py)");
+        g_signal_connect(sync_btn, "clicked", G_CALLBACK(on_cc_sync_monitors_clicked), NULL);
+        gtk_grid_attach(GTK_GRID(sliders_grid), lbl_br, 0, 2, 1, 1);
+        gtk_grid_attach(GTK_GRID(sliders_grid), g_tb.cc_bright_scale, 1, 2, 1, 1);
+        gtk_grid_attach(GTK_GRID(sliders_grid), sync_btn, 2, 2, 1, 1);
+
+        gtk_container_add(GTK_CONTAINER(sliders_frame), sliders_grid);
+        gtk_box_pack_start(GTK_BOX(root_vbox), sliders_frame, FALSE, FALSE, 0);
+
+        /* 4. Quick Toggles 2x3 Grid */
+        GtkWidget *toggles_frame = gtk_frame_new("Quick Toggles");
+        GtkWidget *toggles_grid = gtk_grid_new();
+        gtk_grid_set_row_spacing(GTK_GRID(toggles_grid), 4);
+        gtk_grid_set_column_spacing(GTK_GRID(toggles_grid), 4);
+        gtk_grid_set_column_homogeneous(GTK_GRID(toggles_grid), TRUE);
+        gtk_container_set_border_width(GTK_CONTAINER(toggles_grid), 6);
+
+        g_tb.cc_wifi_toggle_btn     = gtk_button_new_with_label("Wi-Fi: ON");
+        g_tb.cc_bt_toggle_btn       = gtk_button_new_with_label("Bluetooth: ON");
+        g_tb.cc_prof_toggle_btn     = gtk_button_new_with_label("Mode: Balanced");
+        g_tb.cc_caffeine_toggle_btn = gtk_button_new_with_label("Awake: OFF");
+        GtkWidget *ddc_quick_btn    = gtk_button_new_with_label("Sync Monitors");
+        GtkWidget *desk_quick_btn   = gtk_button_new_with_label("Show Desktop");
+
+        g_signal_connect(g_tb.cc_wifi_toggle_btn,     "clicked", G_CALLBACK(on_cc_toggle_wifi_clicked), NULL);
+        g_signal_connect(g_tb.cc_bt_toggle_btn,       "clicked", G_CALLBACK(on_cc_toggle_bt_clicked), NULL);
+        g_signal_connect(g_tb.cc_prof_toggle_btn,     "clicked", G_CALLBACK(on_cc_toggle_prof_clicked), NULL);
+        g_signal_connect(g_tb.cc_caffeine_toggle_btn, "clicked", G_CALLBACK(on_cc_toggle_caffeine_clicked), NULL);
+        g_signal_connect(ddc_quick_btn,               "clicked", G_CALLBACK(on_cc_sync_monitors_clicked), NULL);
+        g_signal_connect(desk_quick_btn,              "clicked", G_CALLBACK(on_quick_show_desktop), NULL);
+
+        gtk_grid_attach(GTK_GRID(toggles_grid), g_tb.cc_wifi_toggle_btn,     0, 0, 1, 1);
+        gtk_grid_attach(GTK_GRID(toggles_grid), g_tb.cc_bt_toggle_btn,       1, 0, 1, 1);
+        gtk_grid_attach(GTK_GRID(toggles_grid), g_tb.cc_prof_toggle_btn,     2, 0, 1, 1);
+        gtk_grid_attach(GTK_GRID(toggles_grid), g_tb.cc_caffeine_toggle_btn, 0, 1, 1, 1);
+        gtk_grid_attach(GTK_GRID(toggles_grid), ddc_quick_btn,               1, 1, 1, 1);
+        gtk_grid_attach(GTK_GRID(toggles_grid), desk_quick_btn,              2, 1, 1, 1);
+
+        gtk_container_add(GTK_CONTAINER(toggles_frame), toggles_grid);
+        gtk_box_pack_start(GTK_BOX(root_vbox), toggles_frame, FALSE, FALSE, 0);
+
+        /* 5. Tabbed Device Switcher (Wi-Fi & LAN | Bluetooth | Sound Output | Power & Battery) */
+        g_tb.cc_notebook = gtk_notebook_new();
+
+        /* Tab 0: Wi-Fi & LAN */
+        GtkWidget *tab_net = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+        gtk_container_set_border_width(GTK_CONTAINER(tab_net), 6);
+        g_tb.cc_net_status_lbl = gtk_label_new("Checking network...");
+        gtk_label_set_xalign(GTK_LABEL(g_tb.cc_net_status_lbl), 0.0f);
+        gtk_box_pack_start(GTK_BOX(tab_net), g_tb.cc_net_status_lbl, FALSE, FALSE, 0);
+
+        GtkWidget *wifi_scroll = gtk_scrolled_window_new(NULL, NULL);
+        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(wifi_scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+        gtk_widget_set_size_request(wifi_scroll, -1, 130);
+        g_tb.cc_wifi_list_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1);
+        gtk_container_add(GTK_CONTAINER(wifi_scroll), g_tb.cc_wifi_list_box);
+        gtk_box_pack_start(GTK_BOX(tab_net), wifi_scroll, TRUE, TRUE, 0);
+
+        GtkWidget *net_btns = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+        GtkWidget *btn_rescan = gtk_button_new_with_label("Rescan Wi-Fi");
+        GtkWidget *btn_net_cp = gtk_button_new_with_label("Network Properties...");
+        g_signal_connect(btn_rescan, "clicked", G_CALLBACK(on_cc_wifi_rescan_clicked), NULL);
+        g_signal_connect_data(btn_net_cp, "clicked", G_CALLBACK(on_launch_cmd_btn),
+                              g_strdup("chicago-control-panel --network"), free_closure_str, 0);
+        gtk_box_pack_start(GTK_BOX(net_btns), btn_rescan, TRUE, TRUE, 0);
+        gtk_box_pack_start(GTK_BOX(net_btns), btn_net_cp, TRUE, TRUE, 0);
+        gtk_box_pack_start(GTK_BOX(tab_net), net_btns, FALSE, FALSE, 0);
+        gtk_notebook_append_page(GTK_NOTEBOOK(g_tb.cc_notebook), tab_net, gtk_label_new("Wi-Fi & LAN"));
+
+        /* Tab 1: Bluetooth */
+        GtkWidget *tab_bt = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+        gtk_container_set_border_width(GTK_CONTAINER(tab_bt), 6);
+        g_tb.cc_bt_status_lbl = gtk_label_new("Checking Bluetooth...");
+        gtk_label_set_xalign(GTK_LABEL(g_tb.cc_bt_status_lbl), 0.0f);
+        gtk_box_pack_start(GTK_BOX(tab_bt), g_tb.cc_bt_status_lbl, FALSE, FALSE, 0);
+
+        GtkWidget *bt_scroll = gtk_scrolled_window_new(NULL, NULL);
+        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(bt_scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+        gtk_widget_set_size_request(bt_scroll, -1, 130);
+        g_tb.cc_bt_list_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1);
+        gtk_container_add(GTK_CONTAINER(bt_scroll), g_tb.cc_bt_list_box);
+        gtk_box_pack_start(GTK_BOX(tab_bt), bt_scroll, TRUE, TRUE, 0);
+
+        GtkWidget *bt_btns = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+        GtkWidget *btn_bt_scan = gtk_button_new_with_label("Scan Devices (5s)");
+        GtkWidget *btn_bt_mgr  = gtk_button_new_with_label("Bluetooth Manager...");
+        g_signal_connect(btn_bt_scan, "clicked", G_CALLBACK(on_cc_bt_scan_clicked), NULL);
+        g_signal_connect_data(btn_bt_mgr, "clicked", G_CALLBACK(on_launch_cmd_btn),
+                              g_strdup("blueman-manager || overskride || kitty -e bluetoothctl"), free_closure_str, 0);
+        gtk_box_pack_start(GTK_BOX(bt_btns), btn_bt_scan, TRUE, TRUE, 0);
+        gtk_box_pack_start(GTK_BOX(bt_btns), btn_bt_mgr,  TRUE, TRUE, 0);
+        gtk_box_pack_start(GTK_BOX(tab_bt), bt_btns, FALSE, FALSE, 0);
+        gtk_notebook_append_page(GTK_NOTEBOOK(g_tb.cc_notebook), tab_bt, gtk_label_new("Bluetooth"));
+
+        /* Tab 2: Sound / Output */
+        GtkWidget *tab_snd = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+        gtk_container_set_border_width(GTK_CONTAINER(tab_snd), 6);
+        GtkWidget *snd_hdr = gtk_label_new("Select PipeWire Default Output Device:");
+        gtk_label_set_xalign(GTK_LABEL(snd_hdr), 0.0f);
+        gtk_box_pack_start(GTK_BOX(tab_snd), snd_hdr, FALSE, FALSE, 0);
+
+        GtkWidget *snd_scroll = gtk_scrolled_window_new(NULL, NULL);
+        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(snd_scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+        gtk_widget_set_size_request(snd_scroll, -1, 130);
+        g_tb.cc_audio_sinks_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1);
+        gtk_container_add(GTK_CONTAINER(snd_scroll), g_tb.cc_audio_sinks_box);
+        gtk_box_pack_start(GTK_BOX(tab_snd), snd_scroll, TRUE, TRUE, 0);
+
+        GtkWidget *snd_btns = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+        GtkWidget *btn_snd_cp = gtk_button_new_with_label("Audio Properties...");
+        GtkWidget *btn_pavu   = gtk_button_new_with_label("Volume Mixer (pavucontrol)...");
+        g_signal_connect_data(btn_snd_cp, "clicked", G_CALLBACK(on_launch_cmd_btn),
+                              g_strdup("chicago-control-panel --audio"), free_closure_str, 0);
+        g_signal_connect_data(btn_pavu, "clicked", G_CALLBACK(on_launch_cmd_btn),
+                              g_strdup("pavucontrol || chicago-control-panel --audio"), free_closure_str, 0);
+        gtk_box_pack_start(GTK_BOX(snd_btns), btn_snd_cp, TRUE, TRUE, 0);
+        gtk_box_pack_start(GTK_BOX(snd_btns), btn_pavu,   TRUE, TRUE, 0);
+        gtk_box_pack_start(GTK_BOX(tab_snd), snd_btns, FALSE, FALSE, 0);
+        gtk_notebook_append_page(GTK_NOTEBOOK(g_tb.cc_notebook), tab_snd, gtk_label_new("Sound Output"));
+
+        /* Tab 3: Power & Battery */
+        GtkWidget *tab_pwr = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+        gtk_container_set_border_width(GTK_CONTAINER(tab_pwr), 6);
+        g_tb.cc_pwr_detail_lbl = gtk_label_new("Checking battery...");
+        gtk_label_set_xalign(GTK_LABEL(g_tb.cc_pwr_detail_lbl), 0.0f);
+        gtk_box_pack_start(GTK_BOX(tab_pwr), g_tb.cc_pwr_detail_lbl, FALSE, FALSE, 2);
+
+        gtk_box_pack_start(GTK_BOX(tab_pwr), make_profile_choice_btn("Power Saver (Eco / Low-Power)", "power-saver"), FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(tab_pwr), make_profile_choice_btn("Balanced (Recommended)", "balanced"), FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(tab_pwr), make_profile_choice_btn("Performance (Max Turbo)", "performance"), FALSE, FALSE, 0);
+
+        GtkWidget *btn_pwr_cp = gtk_button_new_with_label("Power Management Properties...");
+        g_signal_connect_data(btn_pwr_cp, "clicked", G_CALLBACK(on_launch_cmd_btn),
+                              g_strdup("chicago-control-panel --power"), free_closure_str, 0);
+        gtk_box_pack_start(GTK_BOX(tab_pwr), btn_pwr_cp, FALSE, FALSE, 0);
+        gtk_notebook_append_page(GTK_NOTEBOOK(g_tb.cc_notebook), tab_pwr, gtk_label_new("Power & Battery"));
+
+        gtk_box_pack_start(GTK_BOX(root_vbox), g_tb.cc_notebook, TRUE, TRUE, 0);
+        gtk_container_add(GTK_CONTAINER(g_tb.cc_popup), root_vbox);
+    }
+
+    GdkMonitor *current_mon = GDK_MONITOR(g_object_get_data(G_OBJECT(g_tb.cc_popup), "chicago-monitor"));
+
+    if (gtk_widget_get_visible(g_tb.cc_popup)) {
+        if (mon && current_mon != mon) {
+            gtk_widget_hide(g_tb.cc_popup);
+            if (gtk_layer_is_supported()) {
+                gtk_layer_set_monitor(GTK_WINDOW(g_tb.cc_popup), mon);
+            }
+            g_object_set_data(G_OBJECT(g_tb.cc_popup), "chicago-monitor", mon);
+            refresh_control_center_contents();
+            gtk_widget_show_all(g_tb.cc_popup);
+            if (initial_tab >= 0) {
+                gtk_notebook_set_current_page(GTK_NOTEBOOK(g_tb.cc_notebook), initial_tab);
+            }
+            return;
+        }
+        if (initial_tab >= 0 && gtk_notebook_get_current_page(GTK_NOTEBOOK(g_tb.cc_notebook)) != initial_tab) {
+            gtk_notebook_set_current_page(GTK_NOTEBOOK(g_tb.cc_notebook), initial_tab);
+            refresh_control_center_contents();
+            return;
+        }
+        gtk_widget_hide(g_tb.cc_popup);
     } else {
         hide_all_popups();
-        g_tb.pwr_updating = TRUE;
-        char *cap = NULL, *st = NULL;
-        g_file_get_contents("/sys/class/power_supply/BAT0/capacity", &cap, NULL, NULL);
-        g_file_get_contents("/sys/class/power_supply/BAT0/status", &st, NULL, NULL);
-        char msg[256];
-        snprintf(msg, sizeof(msg), "Power Status: %s%% (%s)",
-                 cap ? g_strstrip(cap) : "AC", st ? g_strstrip(st) : "Online");
-        gtk_label_set_text(GTK_LABEL(g_tb.pwr_status_lbl), msg);
-        g_free(cap);
-        g_free(st);
-        gtk_range_set_value(GTK_RANGE(g_tb.pwr_bright_scale), get_current_brightness_pct());
-        g_tb.pwr_updating = FALSE;
-
+        refresh_control_center_contents();
         if (gtk_layer_is_supported() && mon) {
-            gtk_layer_set_monitor(GTK_WINDOW(g_tb.pwr_popup), mon);
+            gtk_layer_set_monitor(GTK_WINDOW(g_tb.cc_popup), mon);
         }
-        gtk_widget_show_all(g_tb.pwr_popup);
+        g_object_set_data(G_OBJECT(g_tb.cc_popup), "chicago-monitor", mon);
+        gtk_widget_show_all(g_tb.cc_popup);
+        if (initial_tab >= 0) {
+            gtk_notebook_set_current_page(GTK_NOTEBOOK(g_tb.cc_notebook), initial_tab);
+        }
     }
 }
 
@@ -1418,19 +2179,95 @@ static void on_start_btn_clicked(GtkButton *btn, gpointer data) {
 static void on_tray_vol_clicked(GtkButton *btn, gpointer data) {
     (void)btn;
     BarInstance *bi = (BarInstance *)data;
-    toggle_volume_popup(bi ? bi->monitor : NULL);
+    toggle_control_center_popup(bi ? bi->monitor : NULL, 2);
+}
+
+static gboolean on_tray_vol_scroll(GtkWidget *widget, GdkEventScroll *event, gpointer data) {
+    (void)widget; (void)data;
+    if (event->direction == GDK_SCROLL_UP) {
+        chicago_spawn_command("wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+");
+    } else if (event->direction == GDK_SCROLL_DOWN) {
+        chicago_spawn_command("wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-");
+    } else {
+        return FALSE;
+    }
+    g_timeout_add(100, on_deferred_tray_refresh, GINT_TO_POINTER(1));
+    return TRUE;
+}
+
+static gboolean on_tray_vol_button_press(GtkWidget *widget, GdkEventButton *event, gpointer data) {
+    BarInstance *bi = (BarInstance *)data;
+    if (event->button == 2) {
+        chicago_spawn_command("wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle");
+        g_timeout_add(100, on_deferred_tray_refresh, GINT_TO_POINTER(1));
+        return TRUE;
+    } else if (event->button == 3) {
+        return on_bar_window_button_press(widget, event, bi);
+    }
+    return FALSE;
+}
+
+static void on_tray_mic_clicked(GtkButton *btn, gpointer data) {
+    (void)btn; (void)data;
+    chicago_spawn_command("wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle");
+    g_timeout_add(100, on_deferred_tray_refresh, GINT_TO_POINTER(1));
+}
+
+static gboolean on_tray_mic_scroll(GtkWidget *widget, GdkEventScroll *event, gpointer data) {
+    (void)widget; (void)data;
+    if (event->direction == GDK_SCROLL_UP) {
+        chicago_spawn_command("wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SOURCE@ 5%+");
+    } else if (event->direction == GDK_SCROLL_DOWN) {
+        chicago_spawn_command("wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 5%-");
+    } else {
+        return FALSE;
+    }
+    g_timeout_add(100, on_deferred_tray_refresh, GINT_TO_POINTER(1));
+    return TRUE;
+}
+
+static void on_tray_prof_clicked(GtkButton *btn, gpointer data) {
+    (void)btn; (void)data;
+    cycle_power_profile();
 }
 
 static void on_tray_net_clicked(GtkButton *btn, gpointer data) {
     (void)btn;
     BarInstance *bi = (BarInstance *)data;
-    toggle_network_popup(bi ? bi->monitor : NULL);
+    toggle_control_center_popup(bi ? bi->monitor : NULL, 0);
+}
+
+static void on_tray_bt_clicked(GtkButton *btn, gpointer data) {
+    (void)btn;
+    BarInstance *bi = (BarInstance *)data;
+    toggle_control_center_popup(bi ? bi->monitor : NULL, 1);
 }
 
 static void on_tray_pwr_clicked(GtkButton *btn, gpointer data) {
     (void)btn;
     BarInstance *bi = (BarInstance *)data;
-    toggle_power_popup(bi ? bi->monitor : NULL);
+    toggle_control_center_popup(bi ? bi->monitor : NULL, 3);
+}
+
+static gboolean on_tray_pwr_scroll(GtkWidget *widget, GdkEventScroll *event, gpointer data) {
+    (void)widget; (void)data;
+    if (event->direction == GDK_SCROLL_UP) {
+        chicago_spawn_command("brightnessctl set +5%");
+    } else if (event->direction == GDK_SCROLL_DOWN) {
+        chicago_spawn_command("brightnessctl set 5%-");
+    } else {
+        return FALSE;
+    }
+    char sync_cmd[512];
+    snprintf(sync_cmd, sizeof(sync_cmd), "python3 \"%s/.config/hypr/scripts/brightness-sync.py\" sync", g_get_home_dir());
+    chicago_spawn_command(sync_cmd);
+    return TRUE;
+}
+
+static void on_tray_cc_clicked(GtkButton *btn, gpointer data) {
+    (void)btn;
+    BarInstance *bi = (BarInstance *)data;
+    toggle_control_center_popup(bi ? bi->monitor : NULL, -1);
 }
 
 static void on_tray_clock_clicked(GtkButton *btn, gpointer data) {
@@ -1490,6 +2327,7 @@ static void update_clock_labels(void) {
 static gboolean on_clock_minute_tick(gpointer data) {
     (void)data;
     update_clock_labels();
+    update_tray_indicators(TRUE);
     schedule_next_minute_tick();
     return G_SOURCE_REMOVE;
 }
@@ -1500,6 +2338,12 @@ static void schedule_next_minute_tick(void) {
     guint wait_sec = lt ? (guint)(60 - lt->tm_sec) : 60;
     if (wait_sec == 0 || wait_sec > 60) wait_sec = 60;
     g_timeout_add_seconds(wait_sec, on_clock_minute_tick, NULL);
+}
+
+static gboolean on_sysfs_tray_tick(gpointer data) {
+    (void)data;
+    update_tray_indicators(FALSE);
+    return G_SOURCE_CONTINUE;
 }
 
 static gboolean on_sigusr1(gpointer data) {
@@ -1515,6 +2359,13 @@ static gboolean on_sigusr2(gpointer data) {
     return G_SOURCE_CONTINUE;
 }
 
+static gboolean on_sigwinch_toggle_cc(gpointer data) {
+    (void)data;
+    GdkMonitor *mon = get_active_or_pointer_monitor();
+    toggle_control_center_popup(mon, -1);
+    return G_SOURCE_CONTINUE;
+}
+
 static void on_ctx_tb_run_cmd(GtkWidget *btn, gpointer data) {
     (void)btn;
     const char *cmd = (const char *)data;
@@ -1525,6 +2376,12 @@ static void on_ctx_tb_open_start(GtkWidget *btn, gpointer data) {
     (void)btn;
     BarInstance *bi = (BarInstance *)data;
     set_start_menu_visible(TRUE, bi ? bi->monitor : NULL);
+}
+
+static void on_ctx_tb_open_cc(GtkWidget *btn, gpointer data) {
+    (void)btn;
+    BarInstance *bi = (BarInstance *)data;
+    toggle_control_center_popup(bi ? bi->monitor : NULL, -1);
 }
 
 static void show_start_button_context_menu(BarInstance *bi, GtkWidget *widget, GdkEventButton *event) {
@@ -1540,6 +2397,8 @@ static void show_start_button_context_menu(BarInstance *bi, GtkWidget *widget, G
 
     chicago_ctx_menu_add_item(vbox, "Open Start Menu", "folder", TRUE,
                               G_CALLBACK(on_ctx_tb_open_start), bi);
+    chicago_ctx_menu_add_item(vbox, "Open Control Center (Quick Settings)", "preferences-system", FALSE,
+                              G_CALLBACK(on_ctx_tb_open_cc), bi);
     chicago_ctx_menu_add_item(vbox, "Explore (Windows Explorer)", "system-file-manager", FALSE,
                               G_CALLBACK(on_ctx_tb_run_cmd), (gpointer)"thunar");
     chicago_ctx_menu_add_item(vbox, "Find Programs...", "system-search", FALSE,
@@ -1584,7 +2443,9 @@ static void show_taskbar_context_menu(BarInstance *bi, GtkWidget *widget, GdkEve
     GtkWidget *vbox = NULL;
     GtkWidget *win = chicago_ctx_menu_begin(mon, left, 28, TRUE, &vbox);
 
-    chicago_ctx_menu_add_item(vbox, "Show Desktop (Minimize / Restore All)", "user-desktop", TRUE,
+    chicago_ctx_menu_add_item(vbox, "Open Control Center (Quick Settings)", "preferences-system", TRUE,
+                              G_CALLBACK(on_ctx_tb_open_cc), bi);
+    chicago_ctx_menu_add_item(vbox, "Show Desktop (Minimize / Restore All)", "user-desktop", FALSE,
                               G_CALLBACK(on_quick_show_desktop), NULL);
     chicago_ctx_menu_add_item(vbox, "Pin a Program to Taskbar...", "system-search", FALSE,
                               G_CALLBACK(on_ctx_tb_run_cmd), (gpointer)"chicago-control-panel --find");
@@ -1759,47 +2620,102 @@ static void create_taskbar_for_monitor(GdkMonitor *mon) {
     gtk_box_pack_start(GTK_BOX(root_hbox), bi->task_box, TRUE, TRUE, 2);
 
     /* 4. Sunken 3D System Tray Well */
-    GtkWidget *tray_well = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 3);
+    GtkWidget *tray_well = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
     gtk_style_context_add_class(gtk_widget_get_style_context(tray_well), "win95-well");
     gtk_widget_set_margin_top(tray_well, 2);
     gtk_widget_set_margin_bottom(tray_well, 2);
     gtk_widget_set_margin_end(tray_well, 3);
 
-    /* Speaker Icon */
-    GtkWidget *vol_btn = gtk_button_new();
-    gtk_style_context_add_class(gtk_widget_get_style_context(vol_btn), "tray-btn");
-    gtk_widget_add_events(vol_btn, GDK_BUTTON_PRESS_MASK);
+    /* Speaker / Master Volume Icon (Click: Sound Tab | Scroll: ±5% | Middle-click: Mute) */
+    bi->vol_btn = gtk_button_new();
+    gtk_style_context_add_class(gtk_widget_get_style_context(bi->vol_btn), "tray-btn");
+    gtk_widget_add_events(bi->vol_btn, GDK_BUTTON_PRESS_MASK | GDK_SCROLL_MASK);
     GdkPixbuf *vpb = chicago_load_icon("audio-volume-high", 16);
-    gtk_container_add(GTK_CONTAINER(vol_btn), gtk_image_new_from_pixbuf(vpb));
+    bi->vol_img = gtk_image_new_from_pixbuf(vpb);
     if (vpb) g_object_unref(vpb);
-    gtk_widget_set_tooltip_text(vol_btn, "Volume Control (Click to adjust)");
-    g_signal_connect(vol_btn, "clicked", G_CALLBACK(on_tray_vol_clicked), bi);
-    g_signal_connect(vol_btn, "button-press-event", G_CALLBACK(on_bar_window_button_press), bi);
-    gtk_box_pack_start(GTK_BOX(tray_well), vol_btn, FALSE, FALSE, 0);
+    gtk_container_add(GTK_CONTAINER(bi->vol_btn), bi->vol_img);
+    g_signal_connect(bi->vol_btn, "clicked", G_CALLBACK(on_tray_vol_clicked), bi);
+    g_signal_connect(bi->vol_btn, "scroll-event", G_CALLBACK(on_tray_vol_scroll), bi);
+    g_signal_connect(bi->vol_btn, "button-press-event", G_CALLBACK(on_tray_vol_button_press), bi);
+    gtk_box_pack_start(GTK_BOX(tray_well), bi->vol_btn, FALSE, FALSE, 0);
 
-    /* Network Icon */
-    GtkWidget *net_btn = gtk_button_new();
-    gtk_style_context_add_class(gtk_widget_get_style_context(net_btn), "tray-btn");
-    gtk_widget_add_events(net_btn, GDK_BUTTON_PRESS_MASK);
-    GdkPixbuf *npb = chicago_load_icon("network-workgroup", 16);
-    gtk_container_add(GTK_CONTAINER(net_btn), gtk_image_new_from_pixbuf(npb));
+    /* Microphone Icon (Click: Toggle Mic Mute | Scroll: ±5% Mic Volume) */
+    bi->mic_btn = gtk_button_new();
+    gtk_style_context_add_class(gtk_widget_get_style_context(bi->mic_btn), "tray-btn");
+    gtk_widget_add_events(bi->mic_btn, GDK_BUTTON_PRESS_MASK | GDK_SCROLL_MASK);
+    GdkPixbuf *mpb = chicago_load_mic_pixbuf(FALSE, 16);
+    bi->mic_img = gtk_image_new_from_pixbuf(mpb);
+    if (mpb) g_object_unref(mpb);
+    gtk_container_add(GTK_CONTAINER(bi->mic_btn), bi->mic_img);
+    g_signal_connect(bi->mic_btn, "clicked", G_CALLBACK(on_tray_mic_clicked), bi);
+    g_signal_connect(bi->mic_btn, "scroll-event", G_CALLBACK(on_tray_mic_scroll), bi);
+    g_signal_connect(bi->mic_btn, "button-press-event", G_CALLBACK(on_bar_window_button_press), bi);
+    gtk_box_pack_start(GTK_BOX(tray_well), bi->mic_btn, FALSE, FALSE, 0);
+
+    /* Custom Windows 95 Power Profile Icon (Click: Cycle Saver -> Balanced -> Performance) */
+    bi->prof_btn = gtk_button_new();
+    gtk_style_context_add_class(gtk_widget_get_style_context(bi->prof_btn), "tray-btn");
+    gtk_widget_add_events(bi->prof_btn, GDK_BUTTON_PRESS_MASK);
+    GdkPixbuf *prpb = chicago_draw_power_profile_pixbuf("balanced", 16);
+    bi->prof_img = gtk_image_new_from_pixbuf(prpb);
+    if (prpb) g_object_unref(prpb);
+    gtk_container_add(GTK_CONTAINER(bi->prof_btn), bi->prof_img);
+    g_signal_connect(bi->prof_btn, "clicked", G_CALLBACK(on_tray_prof_clicked), bi);
+    g_signal_connect(bi->prof_btn, "button-press-event", G_CALLBACK(on_bar_window_button_press), bi);
+    gtk_box_pack_start(GTK_BOX(tray_well), bi->prof_btn, FALSE, FALSE, 0);
+
+    /* Network Icon (Wired Ethernet / Wireless Wi-Fi / Disconnected) */
+    bi->net_btn = gtk_button_new();
+    gtk_style_context_add_class(gtk_widget_get_style_context(bi->net_btn), "tray-btn");
+    gtk_widget_add_events(bi->net_btn, GDK_BUTTON_PRESS_MASK);
+    GdkPixbuf *npb = chicago_load_network_pixbuf(TRUE, FALSE, 16);
+    bi->net_img = gtk_image_new_from_pixbuf(npb);
     if (npb) g_object_unref(npb);
-    gtk_widget_set_tooltip_text(net_btn, "Network & Wi-Fi Connections");
-    g_signal_connect(net_btn, "clicked", G_CALLBACK(on_tray_net_clicked), bi);
-    g_signal_connect(net_btn, "button-press-event", G_CALLBACK(on_bar_window_button_press), bi);
-    gtk_box_pack_start(GTK_BOX(tray_well), net_btn, FALSE, FALSE, 0);
+    gtk_container_add(GTK_CONTAINER(bi->net_btn), bi->net_img);
+    g_signal_connect(bi->net_btn, "clicked", G_CALLBACK(on_tray_net_clicked), bi);
+    g_signal_connect(bi->net_btn, "button-press-event", G_CALLBACK(on_bar_window_button_press), bi);
+    gtk_box_pack_start(GTK_BOX(tray_well), bi->net_btn, FALSE, FALSE, 0);
 
-    /* Battery / Power Icon */
-    GtkWidget *pwr_btn = gtk_button_new();
-    gtk_style_context_add_class(gtk_widget_get_style_context(pwr_btn), "tray-btn");
-    gtk_widget_add_events(pwr_btn, GDK_BUTTON_PRESS_MASK);
-    GdkPixbuf *ppb = chicago_load_icon("battery-good", 16);
-    gtk_container_add(GTK_CONTAINER(pwr_btn), gtk_image_new_from_pixbuf(ppb));
+    /* Bluetooth Icon (Active / Connected / Disabled) */
+    bi->bt_btn = gtk_button_new();
+    gtk_style_context_add_class(gtk_widget_get_style_context(bi->bt_btn), "tray-btn");
+    gtk_widget_add_events(bi->bt_btn, GDK_BUTTON_PRESS_MASK);
+    GdkPixbuf *btpb = chicago_load_bluetooth_pixbuf(TRUE, FALSE, 16);
+    bi->bt_img = gtk_image_new_from_pixbuf(btpb);
+    if (btpb) g_object_unref(btpb);
+    gtk_container_add(GTK_CONTAINER(bi->bt_btn), bi->bt_img);
+    g_signal_connect(bi->bt_btn, "clicked", G_CALLBACK(on_tray_bt_clicked), bi);
+    g_signal_connect(bi->bt_btn, "button-press-event", G_CALLBACK(on_bar_window_button_press), bi);
+    gtk_box_pack_start(GTK_BOX(tray_well), bi->bt_btn, FALSE, FALSE, 0);
+
+    /* Battery Icon + Live % Label (Scroll to adjust brightness, Click for Power Tab) */
+    bi->pwr_btn = gtk_button_new();
+    gtk_style_context_add_class(gtk_widget_get_style_context(bi->pwr_btn), "tray-btn");
+    gtk_widget_add_events(bi->pwr_btn, GDK_BUTTON_PRESS_MASK | GDK_SCROLL_MASK);
+    GtkWidget *pwr_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+    GdkPixbuf *ppb = chicago_load_battery_pixbuf(100, FALSE, 16);
+    bi->pwr_img = gtk_image_new_from_pixbuf(ppb);
     if (ppb) g_object_unref(ppb);
-    gtk_widget_set_tooltip_text(pwr_btn, "Power Meter & Screen Brightness");
-    g_signal_connect(pwr_btn, "clicked", G_CALLBACK(on_tray_pwr_clicked), bi);
-    g_signal_connect(pwr_btn, "button-press-event", G_CALLBACK(on_bar_window_button_press), bi);
-    gtk_box_pack_start(GTK_BOX(tray_well), pwr_btn, FALSE, FALSE, 0);
+    bi->pwr_label = gtk_label_new("100%");
+    gtk_box_pack_start(GTK_BOX(pwr_hbox), bi->pwr_img, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(pwr_hbox), bi->pwr_label, FALSE, FALSE, 0);
+    gtk_container_add(GTK_CONTAINER(bi->pwr_btn), pwr_hbox);
+    g_signal_connect(bi->pwr_btn, "clicked", G_CALLBACK(on_tray_pwr_clicked), bi);
+    g_signal_connect(bi->pwr_btn, "scroll-event", G_CALLBACK(on_tray_pwr_scroll), bi);
+    g_signal_connect(bi->pwr_btn, "button-press-event", G_CALLBACK(on_bar_window_button_press), bi);
+    gtk_box_pack_start(GTK_BOX(tray_well), bi->pwr_btn, FALSE, FALSE, 0);
+
+    /* Unified Control Center Button */
+    bi->cc_btn = gtk_button_new();
+    gtk_style_context_add_class(gtk_widget_get_style_context(bi->cc_btn), "tray-btn");
+    gtk_widget_add_events(bi->cc_btn, GDK_BUTTON_PRESS_MASK);
+    GdkPixbuf *ccpb = chicago_load_icon("preferences-system", 16);
+    gtk_container_add(GTK_CONTAINER(bi->cc_btn), gtk_image_new_from_pixbuf(ccpb));
+    if (ccpb) g_object_unref(ccpb);
+    gtk_widget_set_tooltip_text(bi->cc_btn, "Windows 95 Control Center (Sliders, Wi-Fi, Bluetooth, Audio, Power)");
+    g_signal_connect(bi->cc_btn, "clicked", G_CALLBACK(on_tray_cc_clicked), bi);
+    g_signal_connect(bi->cc_btn, "button-press-event", G_CALLBACK(on_bar_window_button_press), bi);
+    gtk_box_pack_start(GTK_BOX(tray_well), bi->cc_btn, FALSE, FALSE, 0);
 
     /* Clock Button */
     GtkWidget *clk_btn = gtk_button_new();
@@ -1843,7 +2759,9 @@ int main(int argc, char **argv) {
     }
 
     update_clock_labels();
+    update_tray_indicators(TRUE);
     schedule_next_minute_tick();
+    g_timeout_add_seconds(10, on_sysfs_tray_tick, NULL);
 
     /* Bind zwlr_foreign_toplevel_manager_v1 */
     if (gdk_dpy && GDK_IS_WAYLAND_DISPLAY(gdk_dpy)) {
@@ -1866,6 +2784,7 @@ int main(int argc, char **argv) {
 
     g_unix_signal_add(SIGUSR1, on_sigusr1, NULL);
     g_unix_signal_add(SIGUSR2, on_sigusr2, NULL);
+    g_unix_signal_add(SIGWINCH, on_sigwinch_toggle_cc, NULL);
     g_unix_signal_add(SIGHUP, on_sighup_hide_popups, NULL);
 
     gtk_main();

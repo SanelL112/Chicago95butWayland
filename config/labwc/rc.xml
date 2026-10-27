@@ -169,6 +169,12 @@
     <keybind key="Print">
       <action name="Execute" command="sh -c 'grim ~/Pictures/chicago95-$(date +%Y%m%d-%H%M%S).png'" />
     </keybind>
+    <keybind key="W-a">
+      <action name="Execute" command="pkill -WINCH -x chicago-taskbar" />
+    </keybind>
+    <keybind key="W-c">
+      <action name="Execute" command="pkill -WINCH -x chicago-taskbar" />
+    </keybind>
     <keybind key="XF86AudioRaiseVolume" allowWhenLocked="yes">
       <action name="Execute" command="wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+" />
     </keybind>
@@ -179,10 +185,10 @@
       <action name="Execute" command="wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle" />
     </keybind>
     <keybind key="XF86MonBrightnessUp" allowWhenLocked="yes">
-      <action name="Execute" command="brightnessctl set +5%" />
+      <action name="Execute" command="sh -c 'brightnessctl set +5%; python3 ~/.config/hypr/scripts/brightness-sync.py sync'" />
     </keybind>
     <keybind key="XF86MonBrightnessDown" allowWhenLocked="yes">
-      <action name="Execute" command="brightnessctl set 5%-" />
+      <action name="Execute" command="sh -c 'brightnessctl set 5%-; python3 ~/.config/hypr/scripts/brightness-sync.py sync'" />
     </keybind>
   </keyboard>
 
