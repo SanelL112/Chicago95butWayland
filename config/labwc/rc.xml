@@ -169,6 +169,30 @@
     <keybind key="Print">
       <action name="Execute" command="sh -c 'grim ~/Pictures/chicago95-$(date +%Y%m%d-%H%M%S).png'" />
     </keybind>
+    <keybind key="W-p">
+      <action name="ToggleAlwaysOnTop" />
+    </keybind>
+    <keybind key="W-S-p">
+      <action name="Execute" command="/home/sanellathiya/.config/hypr/scripts/cycle-power-profile.sh" />
+    </keybind>
+    <keybind key="W-S-b">
+      <action name="Execute" command="python3 /home/sanellathiya/.config/hypr/scripts/brightness-sync.py sync" />
+    </keybind>
+    <keybind key="W-S-w">
+      <action name="Execute" command="python3 /home/sanellathiya/.config/hypr/scripts/random-nature-wallpaper.py" />
+    </keybind>
+    <keybind key="F12">
+      <action name="Execute" command="toggle-scratchpad-terminal.sh" />
+    </keybind>
+    <keybind key="W-S-Return">
+      <action name="Execute" command="toggle-scratchpad-terminal.sh" />
+    </keybind>
+    <keybind key="A-grave">
+      <action name="NextWindow" identifier="current" />
+    </keybind>
+    <keybind key="A-S-asciitilde">
+      <action name="PreviousWindow" identifier="current" />
+    </keybind>
     <keybind key="W-a">
       <action name="Execute" command="pkill -WINCH -x chicago-taskbar" />
     </keybind>
@@ -216,6 +240,9 @@
 
   <windowRules>
     <windowRule identifier="*" serverDecoration="yes" />
+    <windowRule identifier="scratchpad-terminal">
+      <action name="ToggleAlwaysOnTop" />
+    </windowRule>
   </windowRules>
 
 </labwc_config>

@@ -42,9 +42,11 @@ if [ "${CHICAGO_NESTED:-0}" != "1" ] && command -v mako >/dev/null 2>&1; then
 fi
 
 # 6. Idle & Screen Lock Management (only in full standalone session)
+# Avoid AC suspend freeze on Dell Precision 5550 via suspend-if-on-battery.sh
 if [ "${CHICAGO_NESTED:-0}" != "1" ] && command -v swayidle >/dev/null 2>&1; then
     swayidle -w \
         timeout 600 'chicago-lock' \
+        timeout 1200 "$HOME/.config/hypr/scripts/suspend-if-on-battery.sh" \
         before-sleep 'chicago-lock' >/dev/null 2>&1 &
 fi
 
