@@ -1,0 +1,22 @@
+[Desktop Entry]
+Name=Capture Tool
+Comment=Take screenshots of the screen, a window, or an area
+Exec=chicago-capture
+Icon=gnome-screenshot
+Terminal=false
+Type=Application
+Categories=Utility;Accessories;Graphics;
+Keywords=screenshot;capture;snip;snapping;print;
+Actions=Interactive;Snip;Full;
+
+[Desktop Action Interactive]
+Name=Capture Bar (Interactive)
+Exec=chicago-capture --interactive
+
+[Desktop Action Snip]
+Name=Quick Snip
+Exec=chicago-capture --snip
+
+[Desktop Action Full]
+Name=Capture Full Screen
+Exec=chicago-capture --full

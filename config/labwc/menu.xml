@@ -34,6 +34,9 @@
     <item label="Windows Explorer">
       <action name="Execute" command="thunar" />
     </item>
+    <item label="Capture Tool">
+      <action name="Execute" command="chicago-capture --interactive" />
+    </item>
     <item label="Find Programs...">
       <action name="Execute" command="chicago-control-panel --find" />
     </item>

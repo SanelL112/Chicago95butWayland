@@ -53,11 +53,14 @@ assert_test "Binary present: chicago-desktop" test -x "$REPO_DIR/bin/chicago-des
 assert_test "Binary present: chicago-taskbar" test -x "$REPO_DIR/bin/chicago-taskbar"
 assert_test "Binary present: chicago-control-panel" test -x "$REPO_DIR/bin/chicago-control-panel"
 assert_test "Binary present: chicago-lock" test -x "$REPO_DIR/bin/chicago-lock"
+assert_test "Binary present: chicago-capture" test -x "$REPO_DIR/bin/chicago-capture"
 assert_test "Binary present: start-chicago-wayland" test -x "$REPO_DIR/bin/start-chicago-wayland"
 assert_test "Touchpad 2-finger click & tap configured in rc.xml" \
     bash -c "grep -q '<clickMethod>clickfinger</clickMethod>' '$REPO_DIR/config/labwc/rc.xml' && grep -q '<tapButtonMap>lrm</tapButtonMap>' '$REPO_DIR/config/labwc/rc.xml'"
 assert_test "Control Center keybinds W-a and W-c configured in rc.xml" \
     bash -c "grep -q 'key=\"W-a\"' '$REPO_DIR/config/labwc/rc.xml' && grep -q 'key=\"W-c\"' '$REPO_DIR/config/labwc/rc.xml'"
+assert_test "Capture Tool keybinds Print, W-S-s, W-S-a configured in rc.xml" \
+    bash -c "grep -q 'chicago-capture --interactive' '$REPO_DIR/config/labwc/rc.xml' && grep -q 'chicago-capture --snip' '$REPO_DIR/config/labwc/rc.xml' && grep -q 'chicago-capture --edit' '$REPO_DIR/config/labwc/rc.xml'"
 assert_test "Brightness sync with DDC/CI configured in rc.xml" \
     grep -q "brightness-sync.py sync" "$REPO_DIR/config/labwc/rc.xml"
 assert_test "Theme assets: close-active.png, max-active.png, iconify-active.png" \

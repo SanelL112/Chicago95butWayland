@@ -167,7 +167,22 @@
       <action name="ShowMenu" menu="client-menu" />
     </keybind>
     <keybind key="Print">
-      <action name="Execute" command="sh -c 'grim ~/Pictures/chicago95-$(date +%Y%m%d-%H%M%S).png'" />
+      <action name="Execute" command="chicago-capture --interactive" />
+    </keybind>
+    <keybind key="S-Print">
+      <action name="Execute" command="chicago-capture --full" />
+    </keybind>
+    <keybind key="C-Print">
+      <action name="Execute" command="chicago-capture --full" />
+    </keybind>
+    <keybind key="A-Print">
+      <action name="Execute" command="chicago-capture --window" />
+    </keybind>
+    <keybind key="W-S-s">
+      <action name="Execute" command="chicago-capture --snip" />
+    </keybind>
+    <keybind key="W-S-a">
+      <action name="Execute" command="chicago-capture --edit" />
     </keybind>
     <keybind key="W-p">
       <action name="ToggleAlwaysOnTop" />
