@@ -62,6 +62,28 @@ assert_test "Brightness sync with DDC/CI configured in rc.xml" \
     grep -q "brightness-sync.py sync" "$REPO_DIR/config/labwc/rc.xml"
 assert_test "Theme assets: close-active.png, max-active.png, iconify-active.png" \
     bash -c "test -f '$REPO_DIR/themes/window-decorations/Chicago95/labwc/close-active.png' && test -f '$REPO_DIR/themes/window-decorations/Chicago95/labwc/max-active.png' && test -f '$REPO_DIR/themes/window-decorations/Chicago95/labwc/iconify-active.png'"
+assert_test "Windows 95 Era Wallpapers: Setup, Inside Your Computer, Clouds, Teal/Amber/Green colorways" \
+    python3 -c "
+import os
+from PIL import Image
+wp_dir = '$REPO_DIR/themes/backgrounds/Wallpaper'
+required = [
+    'Setup.png',
+    'Setup (Windows 95 Teal).png',
+    'Setup (Phosphor Amber).png',
+    'Setup (Cyber Green).png',
+    'Setup Widescreen (Original Blue).png',
+    'Inside Your Computer.png',
+    'Inside Your Computer (Setup Blue).png',
+    'Clouds.png',
+    'Winlogo.png'
+]
+for r in required:
+    p = os.path.join(wp_dir, r)
+    assert os.path.isfile(p), f'Missing {r}'
+    im = Image.open(p)
+    assert im.size[0] > 0 and im.size[1] > 0
+"
 
 # 4. Live Headless Wayland Integration Test (Clipboard, Multi-Window, Minimize/Restore, Pixel Check)
 TMP_TEST_DIR="$(mktemp -d)"
