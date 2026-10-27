@@ -1050,23 +1050,6 @@ static inline gboolean on_chicago_ctx_win_key_press(GtkWidget *win, GdkEventKey 
     return FALSE;
 }
 
-static inline gboolean on_chicago_ctx_win_focus_in(GtkWidget *win, GdkEventFocus *ev, gpointer data) {
-    (void)ev; (void)data;
-    g_object_set_data(G_OBJECT(win), "ctx-had-focus", GINT_TO_POINTER(1));
-    if (gtk_layer_is_supported() && gtk_layer_is_layer_window(GTK_WINDOW(win))) {
-        gtk_layer_set_keyboard_mode(GTK_WINDOW(win), GTK_LAYER_SHELL_KEYBOARD_MODE_ON_DEMAND);
-    }
-    return FALSE;
-}
-
-static inline gboolean on_chicago_ctx_win_focus_out(GtkWidget *win, GdkEventFocus *ev, gpointer data) {
-    (void)ev; (void)data;
-    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(win), "ctx-had-focus")) == 1) {
-        chicago_close_context_menu();
-    }
-    return FALSE;
-}
-
 static inline void on_chicago_ctx_item_close_after(GtkWidget *btn, gpointer menu_win) {
     (void)btn;
     if (g_chicago_ctx_win && g_chicago_ctx_win == (GtkWidget *)menu_win) {
@@ -1101,15 +1084,13 @@ static inline GtkWidget *chicago_ctx_menu_begin(GdkMonitor *mon, int left_margin
             gtk_layer_set_margin(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_TOP, MAX(2, edge_margin));
         }
         gtk_layer_set_margin(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_LEFT, MAX(2, left_margin));
-        gtk_layer_set_keyboard_mode(GTK_WINDOW(win), GTK_LAYER_SHELL_KEYBOARD_MODE_EXCLUSIVE);
+        gtk_layer_set_keyboard_mode(GTK_WINDOW(win), GTK_LAYER_SHELL_KEYBOARD_MODE_ON_DEMAND);
         gtk_layer_set_namespace(GTK_WINDOW(win), "chicago-context-menu");
     }
 
-    gtk_widget_add_events(win, GDK_KEY_PRESS_MASK | GDK_FOCUS_CHANGE_MASK);
+    gtk_widget_add_events(win, GDK_KEY_PRESS_MASK);
     g_signal_connect(win, "destroy", G_CALLBACK(on_chicago_ctx_win_destroyed), NULL);
     g_signal_connect(win, "key-press-event", G_CALLBACK(on_chicago_ctx_win_key_press), NULL);
-    g_signal_connect(win, "focus-in-event", G_CALLBACK(on_chicago_ctx_win_focus_in), NULL);
-    g_signal_connect(win, "focus-out-event", G_CALLBACK(on_chicago_ctx_win_focus_out), NULL);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1);
     gtk_container_set_border_width(GTK_CONTAINER(vbox), 3);

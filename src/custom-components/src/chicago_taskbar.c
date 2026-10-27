@@ -1066,11 +1066,23 @@ static void set_start_menu_visible(gboolean visible, GdkMonitor *target_mon) {
 
 static void hide_all_popups(void) {
     chicago_close_context_menu();
+    chicago_spawn_command("pkill -HUP -x chicago-desktop 2>/dev/null || true");
     if (g_tb.start_menu_visible) set_start_menu_visible(FALSE, NULL);
     if (g_tb.vol_popup) gtk_widget_hide(g_tb.vol_popup);
     if (g_tb.net_popup) gtk_widget_hide(g_tb.net_popup);
     if (g_tb.pwr_popup) gtk_widget_hide(g_tb.pwr_popup);
     if (g_tb.cal_popup) gtk_widget_hide(g_tb.cal_popup);
+}
+
+static gboolean on_sighup_hide_popups(gpointer data) {
+    (void)data;
+    chicago_close_context_menu();
+    if (g_tb.start_menu_visible) set_start_menu_visible(FALSE, NULL);
+    if (g_tb.vol_popup) gtk_widget_hide(g_tb.vol_popup);
+    if (g_tb.net_popup) gtk_widget_hide(g_tb.net_popup);
+    if (g_tb.pwr_popup) gtk_widget_hide(g_tb.pwr_popup);
+    if (g_tb.cal_popup) gtk_widget_hide(g_tb.cal_popup);
+    return G_SOURCE_CONTINUE;
 }
 
 static void on_vol_scale_changed(GtkRange *range, gpointer data) {
@@ -1800,7 +1812,14 @@ static void create_taskbar_for_monitor(GdkMonitor *mon) {
     gtk_box_pack_start(GTK_BOX(tray_well), clk_btn, FALSE, FALSE, 2);
 
     gtk_box_pack_end(GTK_BOX(root_hbox), tray_well, FALSE, FALSE, 0);
-    gtk_container_add(GTK_CONTAINER(bi->bar_window), root_hbox);
+
+    GtkWidget *bar_eb = gtk_event_box_new();
+    gtk_event_box_set_visible_window(GTK_EVENT_BOX(bar_eb), FALSE);
+    gtk_widget_add_events(bar_eb, GDK_BUTTON_PRESS_MASK);
+    g_signal_connect(bar_eb, "button-press-event", G_CALLBACK(on_bar_window_button_press), bi);
+    gtk_container_add(GTK_CONTAINER(bar_eb), root_hbox);
+
+    gtk_container_add(GTK_CONTAINER(bi->bar_window), bar_eb);
     gtk_widget_show_all(bi->bar_window);
 }
 
@@ -1847,6 +1866,7 @@ int main(int argc, char **argv) {
 
     g_unix_signal_add(SIGUSR1, on_sigusr1, NULL);
     g_unix_signal_add(SIGUSR2, on_sigusr2, NULL);
+    g_unix_signal_add(SIGHUP, on_sighup_hide_popups, NULL);
 
     gtk_main();
     return 0;

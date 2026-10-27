@@ -580,6 +580,7 @@ static void show_desktop_context_menu(MonitorSurface *ms, GdkEventButton *event,
 static gboolean on_button_press(GtkWidget *widget, GdkEventButton *event, gpointer data) {
     MonitorSurface *ms = (MonitorSurface *)data;
     gtk_widget_grab_focus(widget);
+    chicago_spawn_command("pkill -HUP -x chicago-taskbar 2>/dev/null || true");
 
     int hit = ms->show_icons ? icon_at_point(event->x, event->y) : -1;
 
@@ -717,6 +718,12 @@ static gboolean on_sigusr1_reload(gpointer data) {
     return G_SOURCE_CONTINUE;
 }
 
+static gboolean on_sighup_hide_ctx(gpointer data) {
+    (void)data;
+    chicago_close_context_menu();
+    return G_SOURCE_CONTINUE;
+}
+
 static void create_surface_for_monitor(GdkMonitor *mon, int idx) {
     if (g_app.surface_count >= MAX_MONITORS) return;
     MonitorSurface *ms = &g_app.surfaces[g_app.surface_count++];
@@ -809,6 +816,7 @@ int main(int argc, char **argv) {
     g_object_unref(tf);
 
     g_unix_signal_add(SIGUSR1, on_sigusr1_reload, NULL);
+    g_unix_signal_add(SIGHUP, on_sighup_hide_ctx, NULL);
 
     gtk_main();
     return 0;
