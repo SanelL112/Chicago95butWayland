@@ -29,7 +29,7 @@
 #include "../include/chicago_power.h"
 
 /* Forward declarations for applet dialogs */
-static void show_display_properties_dialog(gboolean standalone);
+static void show_display_properties_dialog(gboolean standalone, int default_tab);
 static void show_audio_properties_dialog(gboolean standalone);
 static void show_network_properties_dialog(gboolean standalone);
 static void show_power_properties_dialog(gboolean standalone);
@@ -52,6 +52,34 @@ static void on_dialog_destroy(GtkWidget *w, gpointer data) {
  * 1. DISPLAY PROPERTIES (CRT Monitor Preview + Background + Appearance + Monitors)
  * ========================================================================= */
 
+#define MAX_DISPLAYS 8
+
+typedef struct {
+    char name[32];          /* "eDP-1", "DP-6", "DP-10" */
+    char desc[128];         /* "HP Inc. HP E22 G5 CNK4021C1C" */
+    char model[64];         /* "HP E22 G5" */
+    char make[64];          /* "HP Inc." */
+    int current_w;          /* 1920 */
+    int current_h;          /* 1080 */
+    double current_refresh; /* 74.973 */
+    int x;                  /* Desktop X coordinate */
+    int y;                  /* Desktop Y coordinate */
+    double scale;           /* 1.0 */
+    gboolean enabled;
+
+    int mode_count;
+    char modes[32][64];
+
+    /* Screen display number: 1, 2, 3... */
+    int number;
+
+    /* Calculated visual canvas placement */
+    double canvas_x;
+    double canvas_y;
+    double canvas_w;
+    double canvas_h;
+} DisplayMonitor;
+
 typedef struct {
     GtkWidget *crt_area;
     GtkWidget *color_combo;
@@ -59,9 +87,28 @@ typedef struct {
     GtkWidget *mode_combo;
     GtkWidget *scheme_combo;
     GtkWidget *scheme_preview;
+
+    /* Multi-monitor arrangement */
+    DisplayMonitor displays[MAX_DISPLAYS];
+    int display_count;
+    int selected_display;
+
+    GtkWidget *layout_area;
+    gboolean is_dragging;
+    double drag_mouse_start_x;
+    double drag_mouse_start_y;
+    int drag_mon_start_x;
+    int drag_mon_start_y;
+    double canvas_scale;
+    double canvas_origin_x;
+    double canvas_origin_y;
+
     GtkWidget *mon_combo;
     GtkWidget *res_combo;
     GtkWidget *scale_combo;
+    GtkWidget *pos_label;
+    GtkWidget *primary_check;
+    GtkWidget *identify_btn;
     GtkWidget *icon_mon_combo;
 
     GdkRGBA preview_bg;
@@ -276,6 +323,558 @@ static void on_scheme_changed(GtkComboBox *combo, gpointer data) {
     if (st->scheme_preview) gtk_widget_queue_draw(st->scheme_preview);
 }
 
+/* =========================================================================
+ * MULTI-MONITOR DRAG-AND-DROP ARRANGEMENT & IDENTIFY (WINDOWS 95 STYLE)
+ * ========================================================================= */
+
+static int load_displays_from_randr(DisplayMonitor *list, int max_count) {
+    char *out = NULL;
+    if (!g_spawn_command_line_sync("wlr-randr", &out, NULL, NULL, NULL) || !out) {
+        return 0;
+    }
+
+    int count = 0;
+    char **lines = g_strsplit(out, "\n", -1);
+    DisplayMonitor *cur = NULL;
+
+    for (int i = 0; lines[i]; i++) {
+        char *line = lines[i];
+        if (line[0] == '\0') continue;
+
+        if (line[0] != ' ' && line[0] != '\t') {
+            if (count >= max_count) break;
+            cur = &list[count++];
+            memset(cur, 0, sizeof(*cur));
+            cur->scale = 1.0;
+            cur->enabled = TRUE;
+
+            char *quote = strchr(line, '"');
+            if (quote) {
+                char *endquote = strchr(quote + 1, '"');
+                if (endquote) {
+                    int len = endquote - (quote + 1);
+                    if (len > 127) len = 127;
+                    strncpy(cur->desc, quote + 1, len);
+                    cur->desc[len] = '\0';
+                }
+                *quote = '\0';
+            }
+            g_strstrip(line);
+            strncpy(cur->name, line, sizeof(cur->name) - 1);
+            continue;
+        }
+
+        if (!cur) continue;
+        char *s = g_strstrip(g_strdup(line));
+
+        if (g_str_has_prefix(s, "Make: ")) {
+            strncpy(cur->make, s + 6, sizeof(cur->make) - 1);
+        } else if (g_str_has_prefix(s, "Model: ")) {
+            strncpy(cur->model, s + 7, sizeof(cur->model) - 1);
+        } else if (g_str_has_prefix(s, "Enabled: ")) {
+            cur->enabled = (g_strcmp0(s + 9, "yes") == 0);
+        } else if (g_str_has_prefix(s, "Position: ")) {
+            sscanf(s + 10, "%d,%d", &cur->x, &cur->y);
+        } else if (g_str_has_prefix(s, "Scale: ")) {
+            cur->scale = g_ascii_strtod(s + 7, NULL);
+            if (cur->scale <= 0.0) cur->scale = 1.0;
+        } else if (strstr(s, " px, ") != NULL) {
+            int w = 0, h = 0;
+            double hz = 0.0;
+            if (sscanf(s, "%dx%d px, %lf Hz", &w, &h, &hz) >= 2) {
+                if (cur->mode_count < 32) {
+                    snprintf(cur->modes[cur->mode_count++], 64, "%dx%d@%.2fHz", w, h, hz);
+                }
+                if (strstr(s, "current") != NULL) {
+                    cur->current_w = w;
+                    cur->current_h = h;
+                    cur->current_refresh = hz;
+                }
+            }
+        }
+        g_free(s);
+    }
+
+    g_strfreev(lines);
+    g_free(out);
+
+    for (int i = 0; i < count; i++) {
+        if (list[i].current_w == 0) {
+            if (list[i].mode_count > 0) {
+                sscanf(list[i].modes[0], "%dx%d", &list[i].current_w, &list[i].current_h);
+            } else {
+                list[i].current_w = 1920;
+                list[i].current_h = 1080;
+            }
+        }
+        if (list[i].model[0] == '\0') {
+            strncpy(list[i].model, list[i].name, sizeof(list[i].model) - 1);
+        }
+    }
+
+    /* Sort by X coordinate so displays read 1, 2, 3 from left to right */
+    for (int i = 0; i < count - 1; i++) {
+        for (int j = i + 1; j < count; j++) {
+            if (list[i].x > list[j].x) {
+                DisplayMonitor tmp = list[i];
+                list[i] = list[j];
+                list[j] = tmp;
+            }
+        }
+    }
+    for (int i = 0; i < count; i++) {
+        list[i].number = i + 1;
+    }
+
+    return count;
+}
+
+static void save_kanshi_config(DisplayMonitor *list, int count) {
+    char cfg_path[512];
+    snprintf(cfg_path, sizeof(cfg_path), "%s/.config/chicago-wayland/kanshi/config", g_get_home_dir());
+
+    FILE *f = fopen(cfg_path, "w");
+    if (!f) return;
+
+    fprintf(f, "# Chicago-Wayland Kanshi Multi-Monitor Profiles\n");
+    fprintf(f, "# Auto-generated by Chicago95 Display Properties\n\n");
+
+    if (count > 1) {
+        fprintf(f, "profile multi-docked {\n");
+        for (int i = 0; i < count; i++) {
+            if (list[i].desc[0] != '\0' && !g_str_has_prefix(list[i].name, "eDP")) {
+                fprintf(f, "    output \"%s\" enable mode %dx%d@%.2fHz position %d,%d scale %.1f\n",
+                        list[i].desc, list[i].current_w, list[i].current_h, list[i].current_refresh,
+                        list[i].x, list[i].y, list[i].scale);
+            } else {
+                fprintf(f, "    output %s enable mode %dx%d@%.2fHz position %d,%d scale %.1f\n",
+                        list[i].name, list[i].current_w, list[i].current_h, list[i].current_refresh,
+                        list[i].x, list[i].y, list[i].scale);
+            }
+        }
+        fprintf(f, "    exec chicago-power apply-display\n");
+        fprintf(f, "}\n\n");
+    }
+
+    fprintf(f, "profile laptop-only {\n");
+    fprintf(f, "    output eDP-1 enable mode 1920x1200@59.95Hz position 0,0 scale 1.0\n");
+    fprintf(f, "    exec chicago-power apply-display\n");
+    fprintf(f, "}\n");
+
+    fclose(f);
+}
+
+static gboolean on_identify_timeout(gpointer data) {
+    GList *wins = (GList *)data;
+    for (GList *l = wins; l; l = l->next) {
+        if (GTK_IS_WIDGET(l->data)) {
+            gtk_widget_destroy(GTK_WIDGET(l->data));
+        }
+    }
+    g_list_free(wins);
+    return G_SOURCE_REMOVE;
+}
+
+static gboolean on_identify_click_close(GtkWidget *widget, GdkEventButton *ev, gpointer data) {
+    (void)ev; (void)data;
+    gtk_widget_destroy(widget);
+    return TRUE;
+}
+
+static void show_identify_overlays(void) {
+    GdkDisplay *dpy = gdk_display_get_default();
+    if (!dpy) return;
+    int n = gdk_display_get_n_monitors(dpy);
+    if (n <= 0) return;
+
+    GList *wins = NULL;
+
+    for (int i = 0; i < n; i++) {
+        GdkMonitor *mon = gdk_display_get_monitor(dpy, i);
+        GdkRectangle geom;
+        gdk_monitor_get_geometry(mon, &geom);
+
+        GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+        gtk_widget_add_events(win, GDK_BUTTON_PRESS_MASK);
+        g_signal_connect(win, "button-press-event", G_CALLBACK(on_identify_click_close), NULL);
+
+        if (gtk_layer_is_supported()) {
+            gtk_layer_init_for_window(GTK_WINDOW(win));
+            gtk_layer_set_monitor(GTK_WINDOW(win), mon);
+            gtk_layer_set_layer(GTK_WINDOW(win), GTK_LAYER_SHELL_LAYER_OVERLAY);
+            gtk_layer_set_anchor(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_TOP, TRUE);
+            gtk_layer_set_anchor(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_LEFT, TRUE);
+            gtk_layer_set_anchor(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_BOTTOM, FALSE);
+            gtk_layer_set_anchor(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_RIGHT, FALSE);
+            gtk_layer_set_margin(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_LEFT, (geom.width - 260) / 2);
+            gtk_layer_set_margin(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_TOP, (geom.height - 200) / 2);
+            gtk_layer_set_exclusive_zone(GTK_WINDOW(win), -1);
+        }
+
+        GtkCssProvider *css = gtk_css_provider_new();
+        gtk_css_provider_load_from_data(css,
+            "window.identify-win { background-color: #000080; border: 4px solid #ffffff; box-shadow: 8px 8px 0px rgba(0,0,0,0.7); }\n"
+            "label.identify-num { font-size: 64pt; font-weight: bold; color: #ffffff; }\n"
+            "label.identify-sub { font-size: 10pt; color: #dfdfdf; }\n", -1, NULL);
+        gtk_style_context_add_provider(gtk_widget_get_style_context(win),
+            GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+        gtk_style_context_add_class(gtk_widget_get_style_context(win), "identify-win");
+        g_object_unref(css);
+
+        GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+        gtk_widget_set_size_request(vbox, 260, 200);
+        gtk_widget_set_valign(vbox, GTK_ALIGN_CENTER);
+
+        char num_str[16];
+        snprintf(num_str, sizeof(num_str), "%d", i + 1);
+        GtkWidget *num_lbl = gtk_label_new(num_str);
+        gtk_style_context_add_class(gtk_widget_get_style_context(num_lbl), "identify-num");
+        gtk_box_pack_start(GTK_BOX(vbox), num_lbl, FALSE, FALSE, 0);
+
+        const char *model = gdk_monitor_get_model(mon);
+        char sub_str[128];
+        snprintf(sub_str, sizeof(sub_str), "%s\n%dx%d", model ? model : "Display", geom.width, geom.height);
+        GtkWidget *sub_lbl = gtk_label_new(sub_str);
+        gtk_style_context_add_class(gtk_widget_get_style_context(sub_lbl), "identify-sub");
+        gtk_box_pack_start(GTK_BOX(vbox), sub_lbl, FALSE, FALSE, 0);
+
+        gtk_container_add(GTK_CONTAINER(win), vbox);
+        gtk_widget_show_all(win);
+        wins = g_list_append(wins, win);
+    }
+
+    g_timeout_add_seconds(3, on_identify_timeout, wins);
+}
+
+static void on_identify_clicked(GtkButton *btn, gpointer data) {
+    (void)btn; (void)data;
+    show_identify_overlays();
+}
+
+static void on_advanced_clicked(GtkButton *btn, gpointer data) {
+    (void)btn; (void)data;
+    chicago_spawn_command("wdisplays >/dev/null 2>&1 &");
+}
+
+static void on_mon_combo_changed(GtkComboBox *combo, gpointer data);
+static void on_res_combo_changed(GtkComboBox *combo, gpointer data);
+static void on_scale_combo_changed(GtkComboBox *combo, gpointer data);
+
+static void update_selected_display_ui(DisplayPropState *st) {
+    if (st->selected_display < 0 || st->selected_display >= st->display_count) return;
+    DisplayMonitor *m = &st->displays[st->selected_display];
+
+    if (st->mon_combo) {
+        g_signal_handlers_block_by_func(st->mon_combo, G_CALLBACK(on_mon_combo_changed), st);
+        gtk_combo_box_set_active(GTK_COMBO_BOX(st->mon_combo), st->selected_display);
+        g_signal_handlers_unblock_by_func(st->mon_combo, G_CALLBACK(on_mon_combo_changed), st);
+    }
+
+    if (st->res_combo) {
+        g_signal_handlers_block_by_func(st->res_combo, G_CALLBACK(on_res_combo_changed), st);
+        gtk_combo_box_text_remove_all(GTK_COMBO_BOX_TEXT(st->res_combo));
+        int active_idx = 0;
+        for (int i = 0; i < m->mode_count; i++) {
+            gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(st->res_combo), m->modes[i]);
+            int mw = 0, mh = 0;
+            if (sscanf(m->modes[i], "%dx%d", &mw, &mh) == 2 && mw == m->current_w && mh == m->current_h) {
+                active_idx = i;
+            }
+        }
+        if (m->mode_count == 0) {
+            char fallback_mode[64];
+            snprintf(fallback_mode, sizeof(fallback_mode), "%dx%d@%.2fHz", m->current_w, m->current_h, m->current_refresh);
+            gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(st->res_combo), fallback_mode);
+        }
+        gtk_combo_box_set_active(GTK_COMBO_BOX(st->res_combo), active_idx);
+        g_signal_handlers_unblock_by_func(st->res_combo, G_CALLBACK(on_res_combo_changed), st);
+    }
+
+    if (st->scale_combo) {
+        g_signal_handlers_block_by_func(st->scale_combo, G_CALLBACK(on_scale_combo_changed), st);
+        char scale_str[16];
+        snprintf(scale_str, sizeof(scale_str), "%.2f", m->scale);
+        if (g_str_has_suffix(scale_str, ".00")) scale_str[strlen(scale_str) - 3] = '\0';
+        if (!gtk_combo_box_set_active_id(GTK_COMBO_BOX(st->scale_combo), scale_str)) {
+            if (!gtk_combo_box_set_active_id(GTK_COMBO_BOX(st->scale_combo), "1.0")) {
+                gtk_combo_box_set_active(GTK_COMBO_BOX(st->scale_combo), 0);
+            }
+        }
+        g_signal_handlers_unblock_by_func(st->scale_combo, G_CALLBACK(on_scale_combo_changed), st);
+    }
+
+    if (st->pos_label) {
+        char pbuf[64];
+        snprintf(pbuf, sizeof(pbuf), "Position: Left %d, Top %d", m->x, m->y);
+        gtk_label_set_text(GTK_LABEL(st->pos_label), pbuf);
+    }
+
+    if (st->layout_area) gtk_widget_queue_draw(st->layout_area);
+}
+
+static void on_mon_combo_changed(GtkComboBox *combo, gpointer data) {
+    DisplayPropState *st = (DisplayPropState *)data;
+    int idx = gtk_combo_box_get_active(combo);
+    if (idx >= 0 && idx < st->display_count) {
+        st->selected_display = idx;
+        update_selected_display_ui(st);
+    }
+}
+
+static void on_res_combo_changed(GtkComboBox *combo, gpointer data) {
+    DisplayPropState *st = (DisplayPropState *)data;
+    if (st->selected_display < 0 || st->selected_display >= st->display_count) return;
+    char *res_str = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(combo));
+    if (!res_str) return;
+
+    int w = 0, h = 0;
+    double hz = 0.0;
+    if (sscanf(res_str, "%dx%d@%lfHz", &w, &h, &hz) >= 2) {
+        st->displays[st->selected_display].current_w = w;
+        st->displays[st->selected_display].current_h = h;
+        st->displays[st->selected_display].current_refresh = hz;
+        if (st->layout_area) gtk_widget_queue_draw(st->layout_area);
+    }
+    g_free(res_str);
+}
+
+static void on_scale_combo_changed(GtkComboBox *combo, gpointer data) {
+    DisplayPropState *st = (DisplayPropState *)data;
+    if (st->selected_display < 0 || st->selected_display >= st->display_count) return;
+    const char *scale_id = gtk_combo_box_get_active_id(combo);
+    if (scale_id) {
+        st->displays[st->selected_display].scale = g_ascii_strtod(scale_id, NULL);
+    }
+}
+
+static gboolean on_draw_layout_area(GtkWidget *widget, cairo_t *cr, gpointer data) {
+    DisplayPropState *st = (DisplayPropState *)data;
+    int w = gtk_widget_get_allocated_width(widget);
+    int h = gtk_widget_get_allocated_height(widget);
+
+    /* Background: Windows 95 desk gray #808080 with sunken 3D bevel */
+    cairo_set_source_rgb(cr, 0.502, 0.502, 0.502);
+    cairo_rectangle(cr, 0, 0, w, h);
+    cairo_fill(cr);
+    chicago_draw_bevel(cr, 0, 0, w, h, FALSE);
+
+    if (st->display_count <= 0) return FALSE;
+
+    int min_x = st->displays[0].x;
+    int min_y = st->displays[0].y;
+    int max_x = st->displays[0].x + st->displays[0].current_w;
+    int max_y = st->displays[0].y + st->displays[0].current_h;
+
+    for (int i = 1; i < st->display_count; i++) {
+        if (st->displays[i].x < min_x) min_x = st->displays[i].x;
+        if (st->displays[i].y < min_y) min_y = st->displays[i].y;
+        if (st->displays[i].x + st->displays[i].current_w > max_x)
+            max_x = st->displays[i].x + st->displays[i].current_w;
+        if (st->displays[i].y + st->displays[i].current_h > max_y)
+            max_y = st->displays[i].y + st->displays[i].current_h;
+    }
+
+    int total_w = max_x - min_x;
+    int total_h = max_y - min_y;
+    if (total_w <= 0) total_w = 1920;
+    if (total_h <= 0) total_h = 1080;
+
+    double pad_x = 24.0;
+    double pad_y = 16.0;
+    double avail_w = w - (2.0 * pad_x);
+    double avail_h = h - (2.0 * pad_y);
+
+    double s = avail_w / (double)total_w;
+    if (avail_h / (double)total_h < s) s = avail_h / (double)total_h;
+    if (s <= 0.0001) s = 0.05;
+
+    st->canvas_scale = s;
+    st->canvas_origin_x = (w - (total_w * s)) / 2.0 - (min_x * s);
+    st->canvas_origin_y = (h - (total_h * s)) / 2.0 - (min_y * s);
+
+    for (int i = 0; i < st->display_count; i++) {
+        DisplayMonitor *m = &st->displays[i];
+        m->canvas_x = st->canvas_origin_x + (m->x * s);
+        m->canvas_y = st->canvas_origin_y + (m->y * s);
+        m->canvas_w = m->current_w * s;
+        m->canvas_h = m->current_h * s;
+
+        gboolean is_sel = (i == st->selected_display);
+
+        /* Outer shadow */
+        cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.35);
+        cairo_rectangle(cr, m->canvas_x + 3, m->canvas_y + 3, m->canvas_w, m->canvas_h);
+        cairo_fill(cr);
+
+        /* Outer monitor bezel (#c0c0c0 with 3D bevel) */
+        cairo_set_source_rgb(cr, 0.753, 0.753, 0.753);
+        cairo_rectangle(cr, m->canvas_x, m->canvas_y, m->canvas_w, m->canvas_h);
+        cairo_fill(cr);
+        chicago_draw_bevel(cr, m->canvas_x, m->canvas_y, m->canvas_w, m->canvas_h, TRUE);
+
+        /* Inner screen area */
+        int border = 4;
+        double sx = m->canvas_x + border;
+        double sy = m->canvas_y + border;
+        double sw = m->canvas_w - (2 * border);
+        double sh = m->canvas_h - (2 * border);
+        if (sw < 10) sw = 10;
+        if (sh < 10) sh = 10;
+
+        if (is_sel) {
+            /* Active Selected: Classic Windows Navy #000080 */
+            cairo_set_source_rgb(cr, 0.0, 0.0, 0.502);
+        } else {
+            /* Inactive: Windows Teal #008080 */
+            cairo_set_source_rgb(cr, 0.0, 0.502, 0.502);
+        }
+        cairo_rectangle(cr, sx, sy, sw, sh);
+        cairo_fill(cr);
+        chicago_draw_bevel(cr, sx, sy, sw, sh, FALSE);
+
+        /* Dotted focus border on selected */
+        if (is_sel && sw > 12 && sh > 12) {
+            cairo_save(cr);
+            cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
+            cairo_set_line_width(cr, 1.0);
+            const double dashes[] = {2.0, 2.0};
+            cairo_set_dash(cr, dashes, 2, 0);
+            cairo_rectangle(cr, sx + 2, sy + 2, sw - 4, sh - 4);
+            cairo_stroke(cr);
+            cairo_restore(cr);
+        }
+
+        /* Large centered monitor number */
+        PangoLayout *layout = gtk_widget_create_pango_layout(widget, NULL);
+        char num_markup[128];
+        snprintf(num_markup, sizeof(num_markup),
+                 "<span font_desc='W95FA Bold 22' foreground='#ffffff'>%d</span>", m->number);
+        pango_layout_set_markup(layout, num_markup, -1);
+        int tw = 0, th = 0;
+        pango_layout_get_pixel_size(layout, &tw, &th);
+        cairo_move_to(cr, sx + (sw - tw) / 2.0, sy + (sh - th) / 2.0 - 8);
+        pango_cairo_show_layout(cr, layout);
+
+        /* Connector name & resolution */
+        char info_markup[128];
+        snprintf(info_markup, sizeof(info_markup),
+                 "<span font_desc='W95FA 7' foreground='#ffffff'>%s</span>\n"
+                 "<span font_desc='W95FA 6' foreground='#dfdfdf'>%dx%d</span>",
+                 m->name, m->current_w, m->current_h);
+        pango_layout_set_markup(layout, info_markup, -1);
+        pango_layout_set_alignment(layout, PANGO_ALIGN_CENTER);
+        pango_layout_get_pixel_size(layout, &tw, &th);
+        cairo_move_to(cr, sx + (sw - tw) / 2.0, sy + (sh - th) / 2.0 + 12);
+        pango_cairo_show_layout(cr, layout);
+
+        g_object_unref(layout);
+    }
+
+    return FALSE;
+}
+
+static gboolean on_layout_button_press(GtkWidget *widget, GdkEventButton *ev, gpointer data) {
+    (void)widget;
+    DisplayPropState *st = (DisplayPropState *)data;
+    if (ev->button != 1) return FALSE;
+
+    for (int i = 0; i < st->display_count; i++) {
+        DisplayMonitor *m = &st->displays[i];
+        if (ev->x >= m->canvas_x && ev->x <= m->canvas_x + m->canvas_w &&
+            ev->y >= m->canvas_y && ev->y <= m->canvas_y + m->canvas_h) {
+            st->selected_display = i;
+            st->is_dragging = TRUE;
+            st->drag_mouse_start_x = ev->x;
+            st->drag_mouse_start_y = ev->y;
+            st->drag_mon_start_x = m->x;
+            st->drag_mon_start_y = m->y;
+            update_selected_display_ui(st);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static gboolean on_layout_motion_notify(GtkWidget *widget, GdkEventMotion *ev, gpointer data) {
+    (void)widget;
+    DisplayPropState *st = (DisplayPropState *)data;
+    if (!st->is_dragging || st->selected_display < 0 || st->selected_display >= st->display_count)
+        return FALSE;
+
+    if (st->canvas_scale <= 0.0001) return FALSE;
+
+    double dx = (ev->x - st->drag_mouse_start_x) / st->canvas_scale;
+    double dy = (ev->y - st->drag_mouse_start_y) / st->canvas_scale;
+
+    int new_x = st->drag_mon_start_x + (int)dx;
+    int new_y = st->drag_mon_start_y + (int)dy;
+
+    DisplayMonitor *cur = &st->displays[st->selected_display];
+    int snap_thresh = (int)(25.0 / st->canvas_scale);
+
+    for (int j = 0; j < st->display_count; j++) {
+        if (j == st->selected_display) continue;
+        DisplayMonitor *other = &st->displays[j];
+
+        if (abs(new_x - (other->x + other->current_w)) < snap_thresh) {
+            new_x = other->x + other->current_w;
+        }
+        if (abs((new_x + cur->current_w) - other->x) < snap_thresh) {
+            new_x = other->x - cur->current_w;
+        }
+        if (abs(new_x - other->x) < snap_thresh) {
+            new_x = other->x;
+        }
+        if (abs(new_y - other->y) < snap_thresh) {
+            new_y = other->y;
+        }
+        if (abs((new_y + cur->current_h) - (other->y + other->current_h)) < snap_thresh) {
+            new_y = other->y + other->current_h - cur->current_h;
+        }
+        if (abs(new_y - (other->y + other->current_h)) < snap_thresh) {
+            new_y = other->y + other->current_h;
+        }
+        if (abs((new_y + cur->current_h) - other->y) < snap_thresh) {
+            new_y = other->y - cur->current_h;
+        }
+    }
+
+    cur->x = new_x;
+    cur->y = new_y;
+
+    if (st->pos_label) {
+        char pbuf[64];
+        snprintf(pbuf, sizeof(pbuf), "Position: Left %d, Top %d", cur->x, cur->y);
+        gtk_label_set_text(GTK_LABEL(st->pos_label), pbuf);
+    }
+
+    if (st->layout_area) gtk_widget_queue_draw(st->layout_area);
+    return TRUE;
+}
+
+static gboolean on_layout_button_release(GtkWidget *widget, GdkEventButton *ev, gpointer data) {
+    (void)widget; (void)ev;
+    DisplayPropState *st = (DisplayPropState *)data;
+    if (st->is_dragging) {
+        st->is_dragging = FALSE;
+
+        if (st->display_count > 0) {
+            int min_x = st->displays[0].x;
+            int min_y = st->displays[0].y;
+            for (int i = 1; i < st->display_count; i++) {
+                if (st->displays[i].x < min_x) min_x = st->displays[i].x;
+                if (st->displays[i].y < min_y) min_y = st->displays[i].y;
+            }
+            for (int i = 0; i < st->display_count; i++) {
+                st->displays[i].x -= min_x;
+                st->displays[i].y -= min_y;
+            }
+        }
+        update_selected_display_ui(st);
+    }
+    return TRUE;
+}
+
 static void apply_display_properties(DisplayPropState *st) {
     const char *bg_id = gtk_combo_box_get_active_id(GTK_COMBO_BOX(st->color_combo));
     if (bg_id) chicago_config_set("bg_color", bg_id);
@@ -285,24 +884,49 @@ static void apply_display_properties(DisplayPropState *st) {
     const char *icon_mon = gtk_combo_box_get_active_id(GTK_COMBO_BOX(st->icon_mon_combo));
     if (icon_mon) chicago_config_set("icon_monitor", icon_mon);
 
-    /* Reload chicago-desktop immediately */
+    /* Reload chicago-desktop background immediately */
     chicago_spawn_command("pkill -USR1 chicago-desktop");
 
-    /* Apply monitor resolution & scale if selected */
-    char *mon = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(st->mon_combo));
-    char *res = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(st->res_combo));
-    const char *scale = gtk_combo_box_get_active_id(GTK_COMBO_BOX(st->scale_combo));
-    if (mon && res && scale && g_strcmp0(res, "(Keep Current)") != 0) {
-        char cmd[512];
-        snprintf(cmd, sizeof(cmd), "wlr-randr --output %s --mode %s --scale %s", mon, res, scale);
-        chicago_spawn_command(cmd);
-    } else if (mon && scale) {
-        char cmd[512];
-        snprintf(cmd, sizeof(cmd), "wlr-randr --output %s --scale %s", mon, scale);
-        chicago_spawn_command(cmd);
+    /* Normalize monitor coordinates so leftmost is at 0, topmost is at 0 */
+    if (st->display_count > 0) {
+        int min_x = st->displays[0].x;
+        int min_y = st->displays[0].y;
+        for (int i = 1; i < st->display_count; i++) {
+            if (st->displays[i].x < min_x) min_x = st->displays[i].x;
+            if (st->displays[i].y < min_y) min_y = st->displays[i].y;
+        }
+        for (int i = 0; i < st->display_count; i++) {
+            st->displays[i].x -= min_x;
+            st->displays[i].y -= min_y;
+        }
+
+        /* Build and run wlr-randr command to apply new positions, modes, scales */
+        GString *cmd = g_string_new("wlr-randr");
+        for (int i = 0; i < st->display_count; i++) {
+            DisplayMonitor *m = &st->displays[i];
+            if (!m->enabled) {
+                g_string_append_printf(cmd, " --output %s --off", m->name);
+            } else {
+                g_string_append_printf(cmd, " --output %s --pos %d,%d --scale %.2f",
+                                       m->name, m->x, m->y, m->scale);
+                if (m->current_w > 0 && m->current_h > 0) {
+                    if (m->current_refresh > 0.0) {
+                        g_string_append_printf(cmd, " --mode %dx%d@%.2fHz",
+                                               m->current_w, m->current_h, m->current_refresh);
+                    } else {
+                        g_string_append_printf(cmd, " --mode %dx%d",
+                                               m->current_w, m->current_h);
+                    }
+                }
+            }
+        }
+        chicago_spawn_command(cmd->str);
+        g_string_free(cmd, TRUE);
+
+        /* Save updated arrangement to Kanshi multi-monitor profile */
+        save_kanshi_config(st->displays, st->display_count);
+        chicago_spawn_command("pkill -HUP kanshi 2>/dev/null || true");
     }
-    g_free(mon);
-    g_free(res);
 }
 
 static void on_display_apply_clicked(GtkButton *btn, gpointer data) {
@@ -317,8 +941,11 @@ static void on_display_ok_clicked(GtkButton *btn, gpointer data) {
     if (GTK_IS_WINDOW(toplevel)) gtk_widget_destroy(toplevel);
 }
 
-static void show_display_properties_dialog(gboolean standalone) {
+static void show_display_properties_dialog(gboolean standalone, int default_tab) {
     DisplayPropState *st = g_malloc0(sizeof(DisplayPropState));
+    st->display_count = load_displays_from_randr(st->displays, MAX_DISPLAYS);
+    st->selected_display = 0;
+
     char bg_str[64];
     chicago_config_get("bg_color", bg_str, sizeof(bg_str), "#008080");
     if (!gdk_rgba_parse(&st->preview_bg, bg_str)) gdk_rgba_parse(&st->preview_bg, "#008080");
@@ -332,8 +959,10 @@ static void show_display_properties_dialog(gboolean standalone) {
 
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(win), "Display Properties");
-    gtk_window_set_default_size(GTK_WINDOW(win), 420, 440);
+    gtk_window_set_default_size(GTK_WINDOW(win), 460, 520);
+    gtk_window_set_resizable(GTK_WINDOW(win), TRUE);
     gtk_window_set_position(GTK_WINDOW(win), GTK_WIN_POS_CENTER);
+    gtk_window_set_keep_above(GTK_WINDOW(win), TRUE);
     gtk_style_context_add_class(gtk_widget_get_style_context(win), "win95-window");
     g_signal_connect(win, "destroy", G_CALLBACK(on_dialog_destroy), GINT_TO_POINTER(standalone));
 
@@ -457,54 +1086,80 @@ static void show_display_properties_dialog(gboolean standalone) {
     gtk_box_pack_start(GTK_BOX(app_vbox), font_info, FALSE, FALSE, 4);
     gtk_notebook_append_page(GTK_NOTEBOOK(nb), app_vbox, gtk_label_new("Appearance"));
 
-    /* --- Tab 3: Settings (Multi-Monitor & Resolution) --- */
-    GtkWidget *set_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    gtk_container_set_border_width(GTK_CONTAINER(set_vbox), 8);
+    /* --- Tab 3: Settings (Multi-Monitor Arrangement & Resolution) --- */
+    GtkWidget *set_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_container_set_border_width(GTK_CONTAINER(set_vbox), 6);
 
-    GtkWidget *mon_frame = gtk_frame_new("Display Output & Resolution");
-    GtkWidget *mon_grid = gtk_grid_new();
-    gtk_container_set_border_width(GTK_CONTAINER(mon_grid), 8);
-    gtk_grid_set_row_spacing(GTK_GRID(mon_grid), 6);
-    gtk_grid_set_column_spacing(GTK_GRID(mon_grid), 8);
+    /* 1. Instruction label (Authentic Windows 95 wording) */
+    GtkWidget *instruct_lbl = gtk_label_new("Drag the monitor icons to match the physical arrangement of your monitors.");
+    gtk_label_set_xalign(GTK_LABEL(instruct_lbl), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(instruct_lbl), TRUE);
+    gtk_box_pack_start(GTK_BOX(set_vbox), instruct_lbl, FALSE, FALSE, 0);
 
-    gtk_grid_attach(GTK_GRID(mon_grid), gtk_label_new("Monitor Output:"), 0, 0, 1, 1);
+    /* 2. Interactive Monitor Canvas */
+    GtkWidget *layout_frame = gtk_frame_new(NULL);
+    gtk_frame_set_shadow_type(GTK_FRAME(layout_frame), GTK_SHADOW_IN);
+    st->layout_area = gtk_drawing_area_new();
+    gtk_widget_set_size_request(st->layout_area, -1, 140);
+    gtk_widget_add_events(st->layout_area,
+                          GDK_BUTTON_PRESS_MASK |
+                          GDK_BUTTON_RELEASE_MASK |
+                          GDK_POINTER_MOTION_MASK);
+    g_signal_connect(st->layout_area, "draw", G_CALLBACK(on_draw_layout_area), st);
+    g_signal_connect(st->layout_area, "button-press-event", G_CALLBACK(on_layout_button_press), st);
+    g_signal_connect(st->layout_area, "button-release-event", G_CALLBACK(on_layout_button_release), st);
+    g_signal_connect(st->layout_area, "motion-notify-event", G_CALLBACK(on_layout_motion_notify), st);
+    gtk_container_add(GTK_CONTAINER(layout_frame), st->layout_area);
+    gtk_box_pack_start(GTK_BOX(set_vbox), layout_frame, FALSE, FALSE, 2);
+
+    /* 3. Display Selector & Identify Button Row */
+    GtkWidget *disp_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *disp_lbl = gtk_label_new("Display:");
+    gtk_box_pack_start(GTK_BOX(disp_row), disp_lbl, FALSE, FALSE, 0);
+
     st->mon_combo = gtk_combo_box_text_new();
-    char *randr_out = NULL;
-    if (g_spawn_command_line_sync("wlr-randr", &randr_out, NULL, NULL, NULL) && randr_out) {
-        char **lines = g_strsplit(randr_out, "\n", -1);
-        for (int i = 0; lines[i]; i++) {
-            if (lines[i][0] != '\0' && lines[i][0] != ' ') {
-                char *sp = strchr(lines[i], ' ');
-                if (sp) *sp = '\0';
-                gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(st->mon_combo), lines[i]);
-            }
-        }
-        g_strfreev(lines);
-        g_free(randr_out);
+    for (int i = 0; i < st->display_count; i++) {
+        char entry_txt[128];
+        snprintf(entry_txt, sizeof(entry_txt), "%d. %s on %s",
+                 st->displays[i].number, st->displays[i].model, st->displays[i].name);
+        gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(st->mon_combo), entry_txt);
     }
-    gtk_combo_box_set_active(GTK_COMBO_BOX(st->mon_combo), 0);
-    gtk_grid_attach(GTK_GRID(mon_grid), st->mon_combo, 1, 0, 1, 1);
+    gtk_combo_box_set_active(GTK_COMBO_BOX(st->mon_combo), st->selected_display);
+    g_signal_connect(st->mon_combo, "changed", G_CALLBACK(on_mon_combo_changed), st);
+    gtk_box_pack_start(GTK_BOX(disp_row), st->mon_combo, TRUE, TRUE, 0);
 
-    gtk_grid_attach(GTK_GRID(mon_grid), gtk_label_new("Desktop Area (Mode):"), 0, 1, 1, 1);
+    st->identify_btn = gtk_button_new_with_label("Identify");
+    gtk_widget_set_size_request(st->identify_btn, 80, 24);
+    g_signal_connect(st->identify_btn, "clicked", G_CALLBACK(on_identify_clicked), st);
+    gtk_box_pack_start(GTK_BOX(disp_row), st->identify_btn, FALSE, FALSE, 0);
+
+    gtk_box_pack_start(GTK_BOX(set_vbox), disp_row, FALSE, FALSE, 2);
+
+    /* 4. Display Properties Group Frame */
+    GtkWidget *prop_frame = gtk_frame_new(NULL);
+    GtkWidget *prop_grid = gtk_grid_new();
+    gtk_container_set_border_width(GTK_CONTAINER(prop_grid), 6);
+    gtk_grid_set_row_spacing(GTK_GRID(prop_grid), 6);
+    gtk_grid_set_column_spacing(GTK_GRID(prop_grid), 8);
+
+    /* Desktop Area (Resolution) */
+    gtk_grid_attach(GTK_GRID(prop_grid), gtk_label_new("Desktop Area:"), 0, 0, 1, 1);
     st->res_combo = gtk_combo_box_text_new();
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(st->res_combo), "(Keep Current)");
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(st->res_combo), "1920x1200@59.950001Hz");
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(st->res_combo), "1920x1080@74.973000Hz");
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(st->res_combo), "1920x1080@60.000000Hz");
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(st->res_combo), "1600x900@60.000000Hz");
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(st->res_combo), "1280x720@60.000000Hz");
-    gtk_combo_box_set_active(GTK_COMBO_BOX(st->res_combo), 0);
-    gtk_grid_attach(GTK_GRID(mon_grid), st->res_combo, 1, 1, 1, 1);
+    g_signal_connect(st->res_combo, "changed", G_CALLBACK(on_res_combo_changed), st);
+    gtk_grid_attach(GTK_GRID(prop_grid), st->res_combo, 1, 0, 1, 1);
 
-    gtk_grid_attach(GTK_GRID(mon_grid), gtk_label_new("Display Scaling:"), 0, 2, 1, 1);
+    /* Display Scaling */
+    gtk_grid_attach(GTK_GRID(prop_grid), gtk_label_new("Display Scaling:"), 0, 1, 1, 1);
     st->scale_combo = gtk_combo_box_text_new();
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->scale_combo), "1.0", "100% (1.0x Normal)");
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->scale_combo), "1.25", "125% (1.25x Medium)");
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->scale_combo), "1.5", "150% (1.5x Large)");
-    gtk_combo_box_set_active(GTK_COMBO_BOX(st->scale_combo), 0);
-    gtk_grid_attach(GTK_GRID(mon_grid), st->scale_combo, 1, 2, 1, 1);
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->scale_combo), "2.0", "200% (2.0x Extra Large)");
+    g_signal_connect(st->scale_combo, "changed", G_CALLBACK(on_scale_combo_changed), st);
+    gtk_grid_attach(GTK_GRID(prop_grid), st->scale_combo, 1, 1, 1, 1);
 
-    gtk_grid_attach(GTK_GRID(mon_grid), gtk_label_new("Show Desktop Icons On:"), 0, 3, 1, 1);
+    /* Desktop Icons Placement */
+    gtk_grid_attach(GTK_GRID(prop_grid), gtk_label_new("Desktop Icons:"), 0, 2, 1, 1);
     st->icon_mon_combo = gtk_combo_box_text_new();
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->icon_mon_combo), "all", "All Connected Monitors");
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->icon_mon_combo), "primary", "Primary Monitor Only");
@@ -513,11 +1168,23 @@ static void show_display_properties_dialog(gboolean standalone) {
     if (!gtk_combo_box_set_active_id(GTK_COMBO_BOX(st->icon_mon_combo), cur_im)) {
         gtk_combo_box_set_active(GTK_COMBO_BOX(st->icon_mon_combo), 0);
     }
-    gtk_grid_attach(GTK_GRID(mon_grid), st->icon_mon_combo, 1, 3, 1, 1);
+    gtk_grid_attach(GTK_GRID(prop_grid), st->icon_mon_combo, 1, 2, 1, 1);
 
-    gtk_container_add(GTK_CONTAINER(mon_frame), mon_grid);
-    gtk_box_pack_start(GTK_BOX(set_vbox), mon_frame, FALSE, FALSE, 0);
+    /* Position Info and Advanced button */
+    st->pos_label = gtk_label_new("Position: Left 0, Top 0");
+    gtk_label_set_xalign(GTK_LABEL(st->pos_label), 0.0f);
+    gtk_grid_attach(GTK_GRID(prop_grid), st->pos_label, 0, 3, 1, 1);
+
+    GtkWidget *adv_btn = gtk_button_new_with_label("Advanced...");
+    gtk_widget_set_size_request(adv_btn, 90, 24);
+    g_signal_connect(adv_btn, "clicked", G_CALLBACK(on_advanced_clicked), NULL);
+    gtk_grid_attach(GTK_GRID(prop_grid), adv_btn, 1, 3, 1, 1);
+
+    gtk_container_add(GTK_CONTAINER(prop_frame), prop_grid);
+    gtk_box_pack_start(GTK_BOX(set_vbox), prop_frame, FALSE, FALSE, 2);
+
     gtk_notebook_append_page(GTK_NOTEBOOK(nb), set_vbox, gtk_label_new("Settings"));
+    update_selected_display_ui(st);
 
     gtk_box_pack_start(GTK_BOX(root_vbox), nb, TRUE, TRUE, 0);
 
@@ -541,6 +1208,10 @@ static void show_display_properties_dialog(gboolean standalone) {
 
     gtk_container_add(GTK_CONTAINER(win), root_vbox);
     gtk_widget_show_all(win);
+    if (default_tab >= 0) {
+        gtk_notebook_set_current_page(GTK_NOTEBOOK(nb), default_tab);
+    }
+    gtk_window_present(GTK_WINDOW(win));
 }
 
 /* =========================================================================
@@ -1224,7 +1895,7 @@ static const ControlApplet g_applets[] = {
 
 static void open_applet_by_id(int id) {
     switch (id) {
-        case 1: show_display_properties_dialog(FALSE); break;
+        case 1: show_display_properties_dialog(FALSE, 0); break;
         case 2: show_audio_properties_dialog(FALSE); break;
         case 3: show_network_properties_dialog(FALSE); break;
         case 4: show_power_properties_dialog(FALSE); break;
@@ -1714,13 +2385,25 @@ static void build_help_dialog(void) {
 }
 
 int main(int argc, char **argv) {
-    gtk_init(NULL, NULL);
+    g_set_prgname("chicago-control-panel");
+    gtk_init(&argc, &argv);
     chicago_apply_theme();
 
     for (int i = 1; i < argc; i++) {
-        if (g_strcmp0(argv[i], "--display") == 0 ||
-            (g_strcmp0(argv[i], "--tab") == 0 && i + 1 < argc && g_strcmp0(argv[i + 1], "display") == 0)) {
-            show_display_properties_dialog(TRUE);
+        if (g_strcmp0(argv[i], "--identify") == 0) {
+            show_identify_overlays();
+            g_timeout_add_seconds(3, (GSourceFunc)gtk_main_quit, NULL);
+            gtk_main();
+            return 0;
+        } else if (g_strcmp0(argv[i], "--display") == 0 ||
+                   (g_strcmp0(argv[i], "--tab") == 0 && i + 1 < argc && g_strcmp0(argv[i + 1], "display") == 0)) {
+            show_display_properties_dialog(TRUE, 0);
+            gtk_main();
+            return 0;
+        } else if (g_strcmp0(argv[i], "--monitors") == 0 ||
+                   g_strcmp0(argv[i], "--display-settings") == 0 ||
+                   (g_strcmp0(argv[i], "--tab") == 0 && i + 1 < argc && g_strcmp0(argv[i + 1], "settings") == 0)) {
+            show_display_properties_dialog(TRUE, 2);
             gtk_main();
             return 0;
         } else if (g_strcmp0(argv[i], "--audio") == 0 ||
