@@ -38,6 +38,9 @@ static void show_keyboard_properties_dialog(gboolean standalone);
 static void show_datetime_properties_dialog(gboolean standalone);
 static void show_system_properties_dialog(gboolean standalone);
 static void show_taskbar_properties_dialog(gboolean standalone);
+static void show_bluetooth_properties_dialog(gboolean standalone);
+static void show_defaults_properties_dialog(gboolean standalone);
+static void show_add_remove_programs_dialog(gboolean standalone);
 static void build_find_dialog(gboolean standalone);
 
 static void on_dialog_destroy(GtkWidget *w, gpointer data) {
@@ -110,6 +113,12 @@ typedef struct {
     GtkWidget *primary_check;
     GtkWidget *identify_btn;
     GtkWidget *icon_mon_combo;
+
+    /* Night Light state */
+    GtkWidget *nl_chk;
+    GtkWidget *nl_scale;
+    GtkWidget *nl_temp_lbl;
+    GtkWidget *nl_sched_combo;
 
     GdkRGBA preview_bg;
     char preview_wall_path[512];
@@ -875,6 +884,61 @@ static gboolean on_layout_button_release(GtkWidget *widget, GdkEventButton *ev, 
     return TRUE;
 }
 
+static void apply_night_light(gboolean enabled, int temp, const char *sched) {
+    chicago_spawn_command("pkill -x wlsunset 2>/dev/null || true");
+    if (enabled) {
+        char cmd[256];
+        if (g_strcmp0(sched, "sunset") == 0) {
+            snprintf(cmd, sizeof(cmd), "wlsunset -t %d -T 6500 -S 07:00 -s 21:00 >/dev/null 2>&1 &", temp);
+        } else if (g_strcmp0(sched, "custom") == 0) {
+            snprintf(cmd, sizeof(cmd), "wlsunset -t %d -T 6500 -S 06:00 -s 22:00 >/dev/null 2>&1 &", temp);
+        } else {
+            /* Manual / Always active */
+            snprintf(cmd, sizeof(cmd), "wlsunset -t %d -T %d >/dev/null 2>&1 &", temp, temp + 1);
+        }
+        chicago_spawn_command(cmd);
+        chicago_config_set("night_light_enabled", "true");
+    } else {
+        chicago_config_set("night_light_enabled", "false");
+    }
+    char temp_str[16];
+    snprintf(temp_str, sizeof(temp_str), "%d", temp);
+    chicago_config_set("night_light_temp", temp_str);
+    chicago_config_set("night_light_schedule", sched ? sched : "sunset");
+}
+
+static void on_night_light_scale_changed(GtkRange *range, gpointer data) {
+    DisplayPropState *st = (DisplayPropState *)data;
+    int temp = (int)gtk_range_get_value(range);
+    char buf[64];
+    snprintf(buf, sizeof(buf), "Warmth: %d K (%s)", temp,
+             temp <= 3500 ? "Very Warm Candlelight" :
+             temp <= 4500 ? "Warm Amber (Recommended)" :
+             temp <= 5500 ? "Soft Warm" : "Daylight Normal");
+    if (st->nl_temp_lbl) gtk_label_set_text(GTK_LABEL(st->nl_temp_lbl), buf);
+    if (st->nl_chk && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(st->nl_chk))) {
+        const char *sched = gtk_combo_box_get_active_id(GTK_COMBO_BOX(st->nl_sched_combo));
+        apply_night_light(TRUE, temp, sched);
+    }
+}
+
+static void on_night_light_toggled(GtkToggleButton *tb, gpointer data) {
+    DisplayPropState *st = (DisplayPropState *)data;
+    gboolean en = gtk_toggle_button_get_active(tb);
+    int temp = (int)gtk_range_get_value(GTK_RANGE(st->nl_scale));
+    const char *sched = gtk_combo_box_get_active_id(GTK_COMBO_BOX(st->nl_sched_combo));
+    apply_night_light(en, temp, sched);
+}
+
+static void on_night_light_sched_changed(GtkComboBox *combo, gpointer data) {
+    DisplayPropState *st = (DisplayPropState *)data;
+    if (st->nl_chk && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(st->nl_chk))) {
+        int temp = (int)gtk_range_get_value(GTK_RANGE(st->nl_scale));
+        const char *sched = gtk_combo_box_get_active_id(combo);
+        apply_night_light(TRUE, temp, sched);
+    }
+}
+
 static void apply_display_properties(DisplayPropState *st) {
     const char *bg_id = gtk_combo_box_get_active_id(GTK_COMBO_BOX(st->color_combo));
     if (bg_id) chicago_config_set("bg_color", bg_id);
@@ -926,6 +990,14 @@ static void apply_display_properties(DisplayPropState *st) {
         /* Save updated arrangement to Kanshi multi-monitor profile */
         save_kanshi_config(st->displays, st->display_count);
         chicago_spawn_command("pkill -HUP kanshi 2>/dev/null || true");
+    }
+
+    /* Apply Night Light settings */
+    if (st->nl_chk) {
+        gboolean nl_en = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(st->nl_chk));
+        int nl_t = (int)gtk_range_get_value(GTK_RANGE(st->nl_scale));
+        const char *nl_s = gtk_combo_box_get_active_id(GTK_COMBO_BOX(st->nl_sched_combo));
+        apply_night_light(nl_en, nl_t, nl_s);
     }
 }
 
@@ -1186,6 +1258,82 @@ static void show_display_properties_dialog(gboolean standalone, int default_tab)
     gtk_notebook_append_page(GTK_NOTEBOOK(nb), set_vbox, gtk_label_new("Settings"));
     update_selected_display_ui(st);
 
+    /* --- Tab 4: Night Light (Blue Light Filter) --- */
+    GtkWidget *nl_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_container_set_border_width(GTK_CONTAINER(nl_vbox), 8);
+
+    GtkWidget *nl_info_frame = gtk_frame_new("Blue Light Filter");
+    GtkWidget *nl_info_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_container_set_border_width(GTK_CONTAINER(nl_info_box), 8);
+
+    GtkWidget *nl_desc = gtk_label_new(
+        "Night Light reduces eye fatigue by lowering blue light frequencies and\n"
+        "displaying warmer colors across all connected monitors at night.");
+    gtk_label_set_xalign(GTK_LABEL(nl_desc), 0.0f);
+    gtk_box_pack_start(GTK_BOX(nl_info_box), nl_desc, FALSE, FALSE, 0);
+
+    char nl_en_str[16];
+    chicago_config_get("night_light_enabled", nl_en_str, sizeof(nl_en_str), "false");
+    gboolean nl_enabled = (g_strcmp0(nl_en_str, "true") == 0);
+
+    char nl_temp_str[16];
+    chicago_config_get("night_light_temp", nl_temp_str, sizeof(nl_temp_str), "4000");
+    int nl_cur_temp = atoi(nl_temp_str);
+    if (nl_cur_temp < 3000 || nl_cur_temp > 6500) nl_cur_temp = 4000;
+
+    char nl_sched_str[32];
+    chicago_config_get("night_light_schedule", nl_sched_str, sizeof(nl_sched_str), "sunset");
+
+    st->nl_chk = gtk_check_button_new_with_label("Enable Night Light");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(st->nl_chk), nl_enabled);
+    g_signal_connect(st->nl_chk, "toggled", G_CALLBACK(on_night_light_toggled), st);
+    gtk_box_pack_start(GTK_BOX(nl_info_box), st->nl_chk, FALSE, FALSE, 4);
+
+    gtk_container_add(GTK_CONTAINER(nl_info_frame), nl_info_box);
+    gtk_box_pack_start(GTK_BOX(nl_vbox), nl_info_frame, FALSE, FALSE, 0);
+
+    GtkWidget *nl_temp_frame = gtk_frame_new("Color Temperature / Warmth");
+    GtkWidget *nl_temp_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_container_set_border_width(GTK_CONTAINER(nl_temp_box), 8);
+
+    st->nl_temp_lbl = gtk_label_new("");
+    char lbl_buf[64];
+    snprintf(lbl_buf, sizeof(lbl_buf), "Warmth: %d K (%s)", nl_cur_temp,
+             nl_cur_temp <= 3500 ? "Very Warm Candlelight" :
+             nl_cur_temp <= 4500 ? "Warm Amber (Recommended)" :
+             nl_cur_temp <= 5500 ? "Soft Warm" : "Daylight Normal");
+    gtk_label_set_text(GTK_LABEL(st->nl_temp_lbl), lbl_buf);
+    gtk_label_set_xalign(GTK_LABEL(st->nl_temp_lbl), 0.0f);
+    gtk_box_pack_start(GTK_BOX(nl_temp_box), st->nl_temp_lbl, FALSE, FALSE, 0);
+
+    st->nl_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 3000, 6500, 100);
+    gtk_range_set_value(GTK_RANGE(st->nl_scale), nl_cur_temp);
+    g_signal_connect(st->nl_scale, "value-changed", G_CALLBACK(on_night_light_scale_changed), st);
+    gtk_box_pack_start(GTK_BOX(nl_temp_box), st->nl_scale, FALSE, FALSE, 0);
+
+    gtk_container_add(GTK_CONTAINER(nl_temp_frame), nl_temp_box);
+    gtk_box_pack_start(GTK_BOX(nl_vbox), nl_temp_frame, FALSE, FALSE, 0);
+
+    GtkWidget *nl_sched_frame = gtk_frame_new("Schedule");
+    GtkWidget *nl_sched_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_container_set_border_width(GTK_CONTAINER(nl_sched_box), 8);
+    gtk_box_pack_start(GTK_BOX(nl_sched_box), gtk_label_new("Active Schedule:"), FALSE, FALSE, 0);
+
+    st->nl_sched_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->nl_sched_combo), "sunset", "Sunset to Sunrise (9:00 PM – 7:00 AM)");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->nl_sched_combo), "manual", "Always Active (Manual)");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->nl_sched_combo), "custom", "Night Only (10:00 PM – 6:00 AM)");
+    if (!gtk_combo_box_set_active_id(GTK_COMBO_BOX(st->nl_sched_combo), nl_sched_str)) {
+        gtk_combo_box_set_active(GTK_COMBO_BOX(st->nl_sched_combo), 0);
+    }
+    g_signal_connect(st->nl_sched_combo, "changed", G_CALLBACK(on_night_light_sched_changed), st);
+    gtk_box_pack_start(GTK_BOX(nl_sched_box), st->nl_sched_combo, TRUE, TRUE, 0);
+
+    gtk_container_add(GTK_CONTAINER(nl_sched_frame), nl_sched_box);
+    gtk_box_pack_start(GTK_BOX(nl_vbox), nl_sched_frame, FALSE, FALSE, 0);
+
+    gtk_notebook_append_page(GTK_NOTEBOOK(nb), nl_vbox, gtk_label_new("Night Light"));
+
     gtk_box_pack_start(GTK_BOX(root_vbox), nb, TRUE, TRUE, 0);
 
     /* Classic OK / Cancel / Apply Bottom Row */
@@ -1250,11 +1398,115 @@ static void on_audio_test_sound(GtkButton *btn, gpointer data) {
     chicago_spawn_command(cmd);
 }
 
+static void on_audio_device_changed(GtkComboBox *combo, gpointer data) {
+    (void)data;
+    const char *id_str = gtk_combo_box_get_active_id(combo);
+    if (!id_str || !*id_str) return;
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd), "wpctl set-default %s", id_str);
+    chicago_spawn_command(cmd);
+}
+
+static void populate_audio_devices(GtkComboBoxText *pb_combo, GtkComboBoxText *rec_combo) {
+    char *wp_out = NULL;
+    if (!g_spawn_command_line_sync("wpctl status", &wp_out, NULL, NULL, NULL) || !wp_out) {
+        return;
+    }
+
+    char **lines = g_strsplit(wp_out, "\n", -1);
+    gboolean in_audio = FALSE;
+    gboolean in_sinks = FALSE;
+    gboolean in_sources = FALSE;
+    char *active_sink_id = NULL;
+    char *active_source_id = NULL;
+
+    GRegex *re = g_regex_new("(\\*?)\\s*(\\d+)\\.\\s+([^\\[]+)", 0, 0, NULL);
+
+    for (int i = 0; lines[i]; i++) {
+        const char *ln = lines[i];
+        if (g_str_has_prefix(ln, "Audio")) {
+            in_audio = TRUE;
+            continue;
+        }
+        if (g_str_has_prefix(ln, "Video") || g_str_has_prefix(ln, "Settings")) {
+            in_audio = FALSE;
+            in_sinks = FALSE;
+            in_sources = FALSE;
+            continue;
+        }
+        if (!in_audio) continue;
+
+        if (strstr(ln, "Sinks:")) {
+            in_sinks = TRUE;
+            in_sources = FALSE;
+            continue;
+        } else if (strstr(ln, "Sources:")) {
+            in_sinks = FALSE;
+            in_sources = TRUE;
+            continue;
+        } else if (strstr(ln, "Filters:") || strstr(ln, "Streams:")) {
+            in_sinks = FALSE;
+            in_sources = FALSE;
+            continue;
+        }
+
+        GMatchInfo *match;
+        if (g_regex_match(re, ln, 0, &match)) {
+            char *star = g_match_info_fetch(match, 1);
+            char *id_str = g_match_info_fetch(match, 2);
+            char *name = g_match_info_fetch(match, 3);
+            g_strstrip(name);
+            gboolean active = (star && strstr(star, "*") != NULL);
+
+            if (in_sinks && pb_combo) {
+                gtk_combo_box_text_append(pb_combo, id_str, name);
+                if (active) {
+                    g_free(active_sink_id);
+                    active_sink_id = g_strdup(id_str);
+                }
+            } else if (in_sources && rec_combo) {
+                gtk_combo_box_text_append(rec_combo, id_str, name);
+                if (active) {
+                    g_free(active_source_id);
+                    active_source_id = g_strdup(id_str);
+                }
+            }
+
+            g_free(star);
+            g_free(id_str);
+            g_free(name);
+            g_match_info_free(match);
+        }
+    }
+
+    g_regex_unref(re);
+    g_strfreev(lines);
+    g_free(wp_out);
+
+    if (pb_combo) {
+        if (active_sink_id) {
+            gtk_combo_box_set_active_id(GTK_COMBO_BOX(pb_combo), active_sink_id);
+            g_free(active_sink_id);
+        } else {
+            gtk_combo_box_set_active(GTK_COMBO_BOX(pb_combo), 0);
+        }
+    }
+    if (rec_combo) {
+        if (active_source_id) {
+            gtk_combo_box_set_active_id(GTK_COMBO_BOX(rec_combo), active_source_id);
+            g_free(active_source_id);
+        } else {
+            gtk_combo_box_set_active(GTK_COMBO_BOX(rec_combo), 0);
+        }
+    }
+}
+
 static void show_audio_properties_dialog(gboolean standalone) {
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(win), "Multimedia & Audio Properties");
-    gtk_window_set_default_size(GTK_WINDOW(win), 380, 340);
+    gtk_window_set_default_size(GTK_WINDOW(win), 410, 420);
     gtk_window_set_position(GTK_WINDOW(win), GTK_WIN_POS_CENTER);
+    gtk_window_set_keep_above(GTK_WINDOW(win), TRUE);
     gtk_style_context_add_class(gtk_widget_get_style_context(win), "win95-window");
     g_signal_connect(win, "destroy", G_CALLBACK(on_dialog_destroy), GINT_TO_POINTER(standalone));
 
@@ -1269,6 +1521,16 @@ static void show_audio_properties_dialog(gboolean standalone) {
     GtkWidget *pb_frame = gtk_frame_new("Playback (Master Output Volume)");
     GtkWidget *pb_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_container_set_border_width(GTK_CONTAINER(pb_vbox), 8);
+
+    /* Preferred Output Device */
+    GtkWidget *pb_dev_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *pb_dev_lbl = gtk_label_new("Preferred device:");
+    gtk_box_pack_start(GTK_BOX(pb_dev_row), pb_dev_lbl, FALSE, FALSE, 0);
+    GtkWidget *pb_dev_combo = gtk_combo_box_text_new();
+    populate_audio_devices(GTK_COMBO_BOX_TEXT(pb_dev_combo), NULL);
+    g_signal_connect(pb_dev_combo, "changed", G_CALLBACK(on_audio_device_changed), NULL);
+    gtk_box_pack_start(GTK_BOX(pb_dev_row), pb_dev_combo, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(pb_vbox), pb_dev_row, FALSE, FALSE, 2);
 
     GtkWidget *vol_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 100, 2);
     char *vout = NULL;
@@ -1294,6 +1556,17 @@ static void show_audio_properties_dialog(gboolean standalone) {
     GtkWidget *rec_frame = gtk_frame_new("Recording (Microphone Input Volume)");
     GtkWidget *rec_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_container_set_border_width(GTK_CONTAINER(rec_vbox), 8);
+
+    /* Preferred Input Device */
+    GtkWidget *rec_dev_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *rec_dev_lbl = gtk_label_new("Preferred device:");
+    gtk_box_pack_start(GTK_BOX(rec_dev_row), rec_dev_lbl, FALSE, FALSE, 0);
+    GtkWidget *rec_dev_combo = gtk_combo_box_text_new();
+    populate_audio_devices(NULL, GTK_COMBO_BOX_TEXT(rec_dev_combo));
+    g_signal_connect(rec_dev_combo, "changed", G_CALLBACK(on_audio_device_changed), NULL);
+    gtk_box_pack_start(GTK_BOX(rec_dev_row), rec_dev_combo, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(rec_vbox), rec_dev_row, FALSE, FALSE, 2);
+
     GtkWidget *mic_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 100, 2);
     gtk_range_set_value(GTK_RANGE(mic_scale), 80);
     g_signal_connect(mic_scale, "value-changed", G_CALLBACK(on_audio_mic_changed), NULL);
@@ -1869,7 +2142,740 @@ static void show_taskbar_properties_dialog(gboolean standalone) {
 }
 
 /* =========================================================================
- * 6. AUTHENTIC WINDOWS 95 CONTROL PANEL FOLDER WINDOW (DEFAULT MODE)
+ * 6. WIRELESS & BLUETOOTH DEVICES APPLET
+ * ========================================================================= */
+
+typedef struct {
+    GtkWidget *win;
+    GtkWidget *power_chk;
+    GtkWidget *tree_view;
+    GtkListStore *store;
+    GtkWidget *status_lbl;
+    gboolean updating;
+} BluetoothState;
+
+static void reload_bluetooth_devices(BluetoothState *st) {
+    if (!st || !st->store) return;
+    st->updating = TRUE;
+    gtk_list_store_clear(st->store);
+
+    char *show_out = NULL;
+    gboolean powered = FALSE;
+    if (g_spawn_command_line_sync("bluetoothctl show", &show_out, NULL, NULL, NULL) && show_out) {
+        if (strstr(show_out, "Powered: yes")) powered = TRUE;
+        g_free(show_out);
+    }
+    if (st->power_chk) {
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(st->power_chk), powered);
+    }
+
+    if (!powered) {
+        if (st->status_lbl) gtk_label_set_text(GTK_LABEL(st->status_lbl), "Bluetooth radio is disabled. Check 'Enable Bluetooth Radio' to connect devices.");
+        st->updating = FALSE;
+        return;
+    }
+
+    char *devs_out = NULL;
+    int dev_count = 0;
+    if (g_spawn_command_line_sync("bluetoothctl devices", &devs_out, NULL, NULL, NULL) && devs_out) {
+        char **lines = g_strsplit(devs_out, "\n", -1);
+        for (int i = 0; lines[i]; i++) {
+            if (g_str_has_prefix(lines[i], "Device ")) {
+                char **parts = g_strsplit(lines[i], " ", 3);
+                if (parts[0] && parts[1] && parts[2]) {
+                    const char *mac = parts[1];
+                    const char *name = parts[2];
+
+                    char cmd[128];
+                    snprintf(cmd, sizeof(cmd), "bluetoothctl info %s", mac);
+                    char *info_out = NULL;
+                    gboolean connected = FALSE;
+                    char batt[32] = "";
+                    if (g_spawn_command_line_sync(cmd, &info_out, NULL, NULL, NULL) && info_out) {
+                        if (strstr(info_out, "Connected: yes")) connected = TRUE;
+                        char *b = strstr(info_out, "Battery Percentage:");
+                        if (b) {
+                            char *paren = strchr(b, '(');
+                            if (paren) {
+                                char *paren_end = strchr(paren, ')');
+                                if (paren_end) {
+                                    int len = paren_end - paren - 1;
+                                    g_strlcpy(batt, paren + 1, MIN(len + 1, (int)sizeof(batt)));
+                                }
+                            }
+                        }
+                        g_free(info_out);
+                    }
+
+                    char status_txt[64];
+                    if (connected) {
+                        if (batt[0]) snprintf(status_txt, sizeof(status_txt), "Connected (%s%%)", batt);
+                        else g_strlcpy(status_txt, "Connected", sizeof(status_txt));
+                    } else {
+                        g_strlcpy(status_txt, "Paired", sizeof(status_txt));
+                    }
+
+                    const char *icon_name = "preferences-system-bluetooth";
+                    if (strcasestr(name, "AirPods") || strcasestr(name, "Headphone") || strcasestr(name, "Buds") || strcasestr(name, "Audio")) {
+                        icon_name = "audio-headphones";
+                    } else if (strcasestr(name, "Phone") || strcasestr(name, "iPhone")) {
+                        icon_name = "phone";
+                    }
+
+                    GdkPixbuf *icon_pb = chicago_load_icon(icon_name, 24);
+
+                    GtkTreeIter iter;
+                    gtk_list_store_append(st->store, &iter);
+                    gtk_list_store_set(st->store, &iter,
+                                       0, icon_pb,
+                                       1, name,
+                                       2, mac,
+                                       3, status_txt,
+                                       4, connected,
+                                       -1);
+                    if (icon_pb) g_object_unref(icon_pb);
+                    dev_count++;
+                }
+                g_strfreev(parts);
+            }
+        }
+        g_strfreev(lines);
+        g_free(devs_out);
+    }
+
+    if (st->status_lbl) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "Bluetooth is active. %d device(s) paired and recognized.", dev_count);
+        gtk_label_set_text(GTK_LABEL(st->status_lbl), buf);
+    }
+    st->updating = FALSE;
+}
+
+static gboolean on_deferred_bt_reload(gpointer data) {
+    BluetoothState *st = (BluetoothState *)data;
+    reload_bluetooth_devices(st);
+    return G_SOURCE_REMOVE;
+}
+
+static void on_bt_power_toggled(GtkToggleButton *tb, gpointer data) {
+    BluetoothState *st = (BluetoothState *)data;
+    if (st->updating) return;
+    gboolean en = gtk_toggle_button_get_active(tb);
+    chicago_spawn_command(en ? "bluetoothctl power on" : "bluetoothctl power off");
+    g_timeout_add(800, on_deferred_bt_reload, st);
+}
+
+static void on_bt_connect_clicked(GtkButton *btn, gpointer data) {
+    (void)btn;
+    BluetoothState *st = (BluetoothState *)data;
+    GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(st->tree_view));
+    GtkTreeModel *model;
+    GtkTreeIter iter;
+    if (gtk_tree_selection_get_selected(sel, &model, &iter)) {
+        char *mac = NULL, *name = NULL;
+        gtk_tree_model_get(model, &iter, 1, &name, 2, &mac, -1);
+        if (mac) {
+            char cmd[128];
+            snprintf(cmd, sizeof(cmd), "bluetoothctl connect %s", mac);
+            chicago_spawn_command(cmd);
+            if (st->status_lbl) {
+                char buf[128];
+                snprintf(buf, sizeof(buf), "Connecting to %s...", name ? name : mac);
+                gtk_label_set_text(GTK_LABEL(st->status_lbl), buf);
+            }
+            g_timeout_add(1500, on_deferred_bt_reload, st);
+        }
+        g_free(mac);
+        g_free(name);
+    }
+}
+
+static void on_bt_disconnect_clicked(GtkButton *btn, gpointer data) {
+    (void)btn;
+    BluetoothState *st = (BluetoothState *)data;
+    GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(st->tree_view));
+    GtkTreeModel *model;
+    GtkTreeIter iter;
+    if (gtk_tree_selection_get_selected(sel, &model, &iter)) {
+        char *mac = NULL, *name = NULL;
+        gtk_tree_model_get(model, &iter, 1, &name, 2, &mac, -1);
+        if (mac) {
+            char cmd[128];
+            snprintf(cmd, sizeof(cmd), "bluetoothctl disconnect %s", mac);
+            chicago_spawn_command(cmd);
+            if (st->status_lbl) {
+                char buf[128];
+                snprintf(buf, sizeof(buf), "Disconnecting %s...", name ? name : mac);
+                gtk_label_set_text(GTK_LABEL(st->status_lbl), buf);
+            }
+            g_timeout_add(1000, on_deferred_bt_reload, st);
+        }
+        g_free(mac);
+        g_free(name);
+    }
+}
+
+static void on_bt_scan_clicked(GtkButton *btn, gpointer data) {
+    (void)btn;
+    BluetoothState *st = (BluetoothState *)data;
+    chicago_spawn_command("bluetoothctl --timeout 8 scan on >/dev/null 2>&1 &");
+    if (st->status_lbl) gtk_label_set_text(GTK_LABEL(st->status_lbl), "Scanning for nearby discoverable Bluetooth devices (8 seconds)...");
+    g_timeout_add(3000, on_deferred_bt_reload, st);
+    g_timeout_add(8500, on_deferred_bt_reload, st);
+}
+
+static void on_bt_remove_clicked(GtkButton *btn, gpointer data) {
+    (void)btn;
+    BluetoothState *st = (BluetoothState *)data;
+    GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(st->tree_view));
+    GtkTreeModel *model;
+    GtkTreeIter iter;
+    if (gtk_tree_selection_get_selected(sel, &model, &iter)) {
+        char *mac = NULL, *name = NULL;
+        gtk_tree_model_get(model, &iter, 1, &name, 2, &mac, -1);
+        if (mac) {
+            char cmd[128];
+            snprintf(cmd, sizeof(cmd), "bluetoothctl remove %s", mac);
+            chicago_spawn_command(cmd);
+            g_timeout_add(500, on_deferred_bt_reload, st);
+        }
+        g_free(mac);
+        g_free(name);
+    }
+}
+
+static void show_bluetooth_properties_dialog(gboolean standalone) {
+    BluetoothState *st = g_malloc0(sizeof(BluetoothState));
+
+    GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    st->win = win;
+    gtk_window_set_title(GTK_WINDOW(win), "Wireless & Bluetooth Devices");
+    gtk_window_set_default_size(GTK_WINDOW(win), 460, 440);
+    gtk_window_set_position(GTK_WINDOW(win), GTK_WIN_POS_CENTER);
+    gtk_window_set_keep_above(GTK_WINDOW(win), TRUE);
+    gtk_style_context_add_class(gtk_widget_get_style_context(win), "win95-window");
+    g_signal_connect(win, "destroy", G_CALLBACK(on_dialog_destroy), GINT_TO_POINTER(standalone));
+
+    GtkWidget *root_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_container_set_border_width(GTK_CONTAINER(root_vbox), 8);
+
+    GtkWidget *nb = gtk_notebook_new();
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_container_set_border_width(GTK_CONTAINER(vbox), 8);
+
+    /* Power Radio Checkbox */
+    st->power_chk = gtk_check_button_new_with_label("Enable Bluetooth Radio (Discoverable & Connectable)");
+    g_signal_connect(st->power_chk, "toggled", G_CALLBACK(on_bt_power_toggled), st);
+    gtk_box_pack_start(GTK_BOX(vbox), st->power_chk, FALSE, FALSE, 0);
+
+    /* Device List Group */
+    GtkWidget *frame = gtk_frame_new("Paired & Discovered Devices");
+    GtkWidget *frame_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_container_set_border_width(GTK_CONTAINER(frame_vbox), 6);
+
+    st->store = gtk_list_store_new(5, GDK_TYPE_PIXBUF, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_BOOLEAN);
+    st->tree_view = gtk_tree_view_new_with_model(GTK_TREE_MODEL(st->store));
+    gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(st->tree_view), TRUE);
+
+    GtkCellRenderer *r_icon = gtk_cell_renderer_pixbuf_new();
+    GtkTreeViewColumn *col_icon = gtk_tree_view_column_new_with_attributes("", r_icon, "pixbuf", 0, NULL);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(st->tree_view), col_icon);
+
+    GtkCellRenderer *r_name = gtk_cell_renderer_text_new();
+    GtkTreeViewColumn *col_name = gtk_tree_view_column_new_with_attributes("Device Name", r_name, "text", 1, NULL);
+    gtk_tree_view_column_set_expand(col_name, TRUE);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(st->tree_view), col_name);
+
+    GtkCellRenderer *r_mac = gtk_cell_renderer_text_new();
+    GtkTreeViewColumn *col_mac = gtk_tree_view_column_new_with_attributes("Hardware Address", r_mac, "text", 2, NULL);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(st->tree_view), col_mac);
+
+    GtkCellRenderer *r_stat = gtk_cell_renderer_text_new();
+    GtkTreeViewColumn *col_stat = gtk_tree_view_column_new_with_attributes("Status", r_stat, "text", 3, NULL);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(st->tree_view), col_stat);
+
+    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_size_request(scroll, -1, 180);
+    gtk_container_add(GTK_CONTAINER(scroll), st->tree_view);
+    gtk_style_context_add_class(gtk_widget_get_style_context(scroll), "win95-inset");
+    gtk_box_pack_start(GTK_BOX(frame_vbox), scroll, TRUE, TRUE, 0);
+
+    /* Action buttons row */
+    GtkWidget *act_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *conn_btn = gtk_button_new_with_label("Connect");
+    GtkWidget *disconn_btn = gtk_button_new_with_label("Disconnect");
+    GtkWidget *scan_btn = gtk_button_new_with_label("Scan for Devices");
+    GtkWidget *rem_btn = gtk_button_new_with_label("Remove");
+
+    gtk_widget_set_size_request(conn_btn, 80, 24);
+    gtk_widget_set_size_request(disconn_btn, 80, 24);
+    gtk_widget_set_size_request(scan_btn, 115, 24);
+    gtk_widget_set_size_request(rem_btn, 75, 24);
+
+    g_signal_connect(conn_btn, "clicked", G_CALLBACK(on_bt_connect_clicked), st);
+    g_signal_connect(disconn_btn, "clicked", G_CALLBACK(on_bt_disconnect_clicked), st);
+    g_signal_connect(scan_btn, "clicked", G_CALLBACK(on_bt_scan_clicked), st);
+    g_signal_connect(rem_btn, "clicked", G_CALLBACK(on_bt_remove_clicked), st);
+
+    gtk_box_pack_start(GTK_BOX(act_row), conn_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(act_row), disconn_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(act_row), scan_btn, FALSE, FALSE, 0);
+    gtk_box_pack_end(GTK_BOX(act_row), rem_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(frame_vbox), act_row, FALSE, FALSE, 0);
+
+    gtk_container_add(GTK_CONTAINER(frame), frame_vbox);
+    gtk_box_pack_start(GTK_BOX(vbox), frame, TRUE, TRUE, 0);
+
+    st->status_lbl = gtk_label_new("Ready.");
+    gtk_label_set_xalign(GTK_LABEL(st->status_lbl), 0.0f);
+    gtk_box_pack_start(GTK_BOX(vbox), st->status_lbl, FALSE, FALSE, 0);
+
+    gtk_notebook_append_page(GTK_NOTEBOOK(nb), vbox, gtk_label_new("Devices"));
+    gtk_box_pack_start(GTK_BOX(root_vbox), nb, TRUE, TRUE, 0);
+
+    GtkWidget *btn_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *ok_btn = gtk_button_new_with_label("OK");
+    GtkWidget *close_btn = gtk_button_new_with_label("Close");
+    gtk_widget_set_size_request(ok_btn, 75, 23);
+    gtk_widget_set_size_request(close_btn, 75, 23);
+    g_signal_connect_swapped(ok_btn, "clicked", G_CALLBACK(gtk_widget_destroy), win);
+    g_signal_connect_swapped(close_btn, "clicked", G_CALLBACK(gtk_widget_destroy), win);
+    gtk_box_pack_end(GTK_BOX(btn_row), close_btn, FALSE, FALSE, 0);
+    gtk_box_pack_end(GTK_BOX(btn_row), ok_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(root_vbox), btn_row, FALSE, FALSE, 0);
+
+    gtk_container_add(GTK_CONTAINER(win), root_vbox);
+    gtk_widget_show_all(win);
+
+    reload_bluetooth_devices(st);
+}
+
+/* =========================================================================
+ * 7. DEFAULT APPLICATIONS & FILE ASSOCIATIONS APPLET
+ * ========================================================================= */
+
+typedef struct {
+    GtkWidget *win;
+    GtkWidget *browser_combo;
+    GtkWidget *file_mgr_combo;
+    GtkWidget *term_combo;
+    GtkWidget *editor_combo;
+    GtkWidget *media_combo;
+} DefaultsState;
+
+static void on_defaults_apply(GtkButton *btn, gpointer data) {
+    (void)btn;
+    DefaultsState *st = (DefaultsState *)data;
+    const char *b = gtk_combo_box_get_active_id(GTK_COMBO_BOX(st->browser_combo));
+    if (b && *b) {
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd), "xdg-settings set default-web-browser %s", b);
+        chicago_spawn_command(cmd);
+    }
+    const char *fm = gtk_combo_box_get_active_id(GTK_COMBO_BOX(st->file_mgr_combo));
+    if (fm && *fm) {
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd), "xdg-mime default %s inode/directory", fm);
+        chicago_spawn_command(cmd);
+    }
+    const char *ed = gtk_combo_box_get_active_id(GTK_COMBO_BOX(st->editor_combo));
+    if (ed && *ed) {
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd), "xdg-mime default %s text/plain", ed);
+        chicago_spawn_command(cmd);
+    }
+    const char *mp = gtk_combo_box_get_active_id(GTK_COMBO_BOX(st->media_combo));
+    if (mp && *mp) {
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd), "xdg-mime default %s audio/mpeg", mp);
+        chicago_spawn_command(cmd);
+    }
+}
+
+static void on_defaults_ok(GtkButton *btn, gpointer data) {
+    DefaultsState *st = (DefaultsState *)data;
+    on_defaults_apply(btn, data);
+    gtk_widget_destroy(st->win);
+}
+
+static void show_defaults_properties_dialog(gboolean standalone) {
+    DefaultsState *st = g_malloc0(sizeof(DefaultsState));
+
+    GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    st->win = win;
+    gtk_window_set_title(GTK_WINDOW(win), "Default Programs");
+    gtk_window_set_default_size(GTK_WINDOW(win), 450, 420);
+    gtk_window_set_position(GTK_WINDOW(win), GTK_WIN_POS_CENTER);
+    gtk_window_set_keep_above(GTK_WINDOW(win), TRUE);
+    gtk_style_context_add_class(gtk_widget_get_style_context(win), "win95-window");
+    g_signal_connect(win, "destroy", G_CALLBACK(on_dialog_destroy), GINT_TO_POINTER(standalone));
+
+    GtkWidget *root_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_container_set_border_width(GTK_CONTAINER(root_vbox), 8);
+
+    GtkWidget *nb = gtk_notebook_new();
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_container_set_border_width(GTK_CONTAINER(vbox), 8);
+
+    GtkWidget *desc_lbl = gtk_label_new("Set your default programs and file type handlers for internet, browsing, and media.");
+    gtk_label_set_xalign(GTK_LABEL(desc_lbl), 0.0f);
+    gtk_box_pack_start(GTK_BOX(vbox), desc_lbl, FALSE, FALSE, 0);
+
+    GtkWidget *grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 10);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
+    gtk_container_set_border_width(GTK_CONTAINER(grid), 6);
+
+    /* 1. Web Browser */
+    gtk_grid_attach(GTK_GRID(grid), gtk_label_new("Web Browser:"), 0, 0, 1, 1);
+    st->browser_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->browser_combo), "google-chrome-canary.desktop", "Google Chrome Canary");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->browser_combo), "google-chrome.desktop", "Google Chrome (Stable)");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->browser_combo), "firefox.desktop", "Mozilla Firefox");
+    char *cur_b = NULL;
+    if (g_spawn_command_line_sync("xdg-settings get default-web-browser", &cur_b, NULL, NULL, NULL) && cur_b) {
+        g_strstrip(cur_b);
+        if (!gtk_combo_box_set_active_id(GTK_COMBO_BOX(st->browser_combo), cur_b)) {
+            gtk_combo_box_set_active(GTK_COMBO_BOX(st->browser_combo), 0);
+        }
+        g_free(cur_b);
+    } else {
+        gtk_combo_box_set_active(GTK_COMBO_BOX(st->browser_combo), 0);
+    }
+    gtk_widget_set_hexpand(st->browser_combo, TRUE);
+    gtk_grid_attach(GTK_GRID(grid), st->browser_combo, 1, 0, 1, 1);
+
+    /* 2. File Manager */
+    gtk_grid_attach(GTK_GRID(grid), gtk_label_new("File Manager:"), 0, 1, 1, 1);
+    st->file_mgr_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->file_mgr_combo), "thunar.desktop", "Thunar File Manager (Windows Explorer)");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->file_mgr_combo), "org.gnome.Nautilus.desktop", "GNOME Files (Nautilus)");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->file_mgr_combo), "org.kde.dolphin.desktop", "KDE Dolphin");
+    char *cur_fm = NULL;
+    if (g_spawn_command_line_sync("xdg-mime query default inode/directory", &cur_fm, NULL, NULL, NULL) && cur_fm) {
+        g_strstrip(cur_fm);
+        if (!gtk_combo_box_set_active_id(GTK_COMBO_BOX(st->file_mgr_combo), cur_fm)) {
+            gtk_combo_box_set_active(GTK_COMBO_BOX(st->file_mgr_combo), 0);
+        }
+        g_free(cur_fm);
+    } else {
+        gtk_combo_box_set_active(GTK_COMBO_BOX(st->file_mgr_combo), 0);
+    }
+    gtk_grid_attach(GTK_GRID(grid), st->file_mgr_combo, 1, 1, 1, 1);
+
+    /* 3. Terminal Emulator */
+    gtk_grid_attach(GTK_GRID(grid), gtk_label_new("MS-DOS Prompt / Terminal:"), 0, 2, 1, 1);
+    st->term_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->term_combo), "kitty", "MS-DOS Prompt (Kitty with VGA Font)");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->term_combo), "gnome-terminal", "GNOME Terminal");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->term_combo), "alacritty", "Alacritty");
+    gtk_combo_box_set_active(GTK_COMBO_BOX(st->term_combo), 0);
+    gtk_grid_attach(GTK_GRID(grid), st->term_combo, 1, 2, 1, 1);
+
+    /* 4. Text Editor */
+    gtk_grid_attach(GTK_GRID(grid), gtk_label_new("Text Editor (Notepad):"), 0, 3, 1, 1);
+    st->editor_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->editor_combo), "mousepad.desktop", "Mousepad (Windows Notepad)");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->editor_combo), "org.gnome.gedit.desktop", "Gedit Text Editor");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->editor_combo), "code.desktop", "Visual Studio Code");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->editor_combo), "libreoffice-writer.desktop", "LibreOffice Writer");
+    char *cur_ed = NULL;
+    if (g_spawn_command_line_sync("xdg-mime query default text/plain", &cur_ed, NULL, NULL, NULL) && cur_ed) {
+        g_strstrip(cur_ed);
+        if (!gtk_combo_box_set_active_id(GTK_COMBO_BOX(st->editor_combo), cur_ed)) {
+            gtk_combo_box_set_active(GTK_COMBO_BOX(st->editor_combo), 0);
+        }
+        g_free(cur_ed);
+    } else {
+        gtk_combo_box_set_active(GTK_COMBO_BOX(st->editor_combo), 0);
+    }
+    gtk_grid_attach(GTK_GRID(grid), st->editor_combo, 1, 3, 1, 1);
+
+    /* 5. Media Player */
+    gtk_grid_attach(GTK_GRID(grid), gtk_label_new("Media Player:"), 0, 4, 1, 1);
+    st->media_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->media_combo), "com.spotify.Client.desktop", "Spotify Music Player");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->media_combo), "org.gnome.Decibels.desktop", "GNOME Decibels Audio Player");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(st->media_combo), "vlc.desktop", "VLC Media Player");
+    char *cur_mp = NULL;
+    if (g_spawn_command_line_sync("xdg-mime query default audio/mpeg", &cur_mp, NULL, NULL, NULL) && cur_mp) {
+        g_strstrip(cur_mp);
+        if (!gtk_combo_box_set_active_id(GTK_COMBO_BOX(st->media_combo), cur_mp)) {
+            gtk_combo_box_set_active(GTK_COMBO_BOX(st->media_combo), 0);
+        }
+        g_free(cur_mp);
+    } else {
+        gtk_combo_box_set_active(GTK_COMBO_BOX(st->media_combo), 0);
+    }
+    gtk_grid_attach(GTK_GRID(grid), st->media_combo, 1, 4, 1, 1);
+
+    gtk_box_pack_start(GTK_BOX(vbox), grid, FALSE, FALSE, 4);
+
+    gtk_notebook_append_page(GTK_NOTEBOOK(nb), vbox, gtk_label_new("Programs"));
+    gtk_box_pack_start(GTK_BOX(root_vbox), nb, TRUE, TRUE, 0);
+
+    GtkWidget *btn_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *ok_btn = gtk_button_new_with_label("OK");
+    GtkWidget *cancel_btn = gtk_button_new_with_label("Cancel");
+    GtkWidget *apply_btn = gtk_button_new_with_label("Apply");
+    gtk_widget_set_size_request(ok_btn, 75, 23);
+    gtk_widget_set_size_request(cancel_btn, 75, 23);
+    gtk_widget_set_size_request(apply_btn, 75, 23);
+
+    g_signal_connect(ok_btn, "clicked", G_CALLBACK(on_defaults_ok), st);
+    g_signal_connect_swapped(cancel_btn, "clicked", G_CALLBACK(gtk_widget_destroy), win);
+    g_signal_connect(apply_btn, "clicked", G_CALLBACK(on_defaults_apply), st);
+
+    gtk_box_pack_end(GTK_BOX(btn_row), apply_btn, FALSE, FALSE, 0);
+    gtk_box_pack_end(GTK_BOX(btn_row), cancel_btn, FALSE, FALSE, 0);
+    gtk_box_pack_end(GTK_BOX(btn_row), ok_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(root_vbox), btn_row, FALSE, FALSE, 0);
+
+    gtk_container_add(GTK_CONTAINER(win), root_vbox);
+    gtk_widget_show_all(win);
+}
+
+/* =========================================================================
+ * 8. ADD/REMOVE PROGRAMS PROPERTIES APPLET
+ * ========================================================================= */
+
+typedef struct {
+    GtkWidget *win;
+    GtkWidget *search_entry;
+    GtkWidget *tree_view;
+    GtkListStore *store;
+    GtkTreeModelFilter *filter;
+    GtkWidget *status_lbl;
+} AddRemoveState;
+
+static gboolean on_add_remove_filter_func(GtkTreeModel *model, GtkTreeIter *iter, gpointer data) {
+    AddRemoveState *st = (AddRemoveState *)data;
+    const char *search = gtk_entry_get_text(GTK_ENTRY(st->search_entry));
+    if (!search || !*search) return TRUE;
+
+    char *name = NULL, *app_id = NULL;
+    gtk_tree_model_get(model, iter, 1, &name, 4, &app_id, -1);
+    gboolean match = FALSE;
+    if (name && strcasestr(name, search)) match = TRUE;
+    if (app_id && strcasestr(app_id, search)) match = TRUE;
+    g_free(name);
+    g_free(app_id);
+    return match;
+}
+
+static void on_add_remove_search_changed(GtkSearchEntry *entry, gpointer data) {
+    (void)entry;
+    AddRemoveState *st = (AddRemoveState *)data;
+    if (st->filter) {
+        gtk_tree_model_filter_refilter(st->filter);
+    }
+}
+
+static void reload_add_remove_programs(AddRemoveState *st) {
+    if (!st || !st->store) return;
+    gtk_list_store_clear(st->store);
+
+    char *out = NULL;
+    int count = 0;
+    if (g_spawn_command_line_sync("flatpak list --app --columns=application,name,version,size", &out, NULL, NULL, NULL) && out) {
+        char **lines = g_strsplit(out, "\n", -1);
+        for (int i = 0; lines[i]; i++) {
+            if (!*lines[i]) continue;
+            char **cols = g_strsplit(lines[i], "\t", 4);
+            int col_count = g_strv_length(cols);
+            if (col_count >= 4) {
+                const char *app_id = cols[0];
+                const char *name = cols[1];
+                const char *ver = cols[2];
+                const char *size = cols[3];
+
+                GdkPixbuf *icon_pb = chicago_load_icon(app_id, 24);
+                if (!icon_pb) icon_pb = chicago_load_icon("application-x-executable", 24);
+
+                GtkTreeIter iter;
+                gtk_list_store_append(st->store, &iter);
+                gtk_list_store_set(st->store, &iter,
+                                   0, icon_pb,
+                                   1, name,
+                                   2, ver,
+                                   3, size,
+                                   4, app_id,
+                                   5, TRUE,
+                                   -1);
+                if (icon_pb) g_object_unref(icon_pb);
+                count++;
+            }
+            g_strfreev(cols);
+        }
+        g_strfreev(lines);
+        g_free(out);
+    }
+
+    if (st->status_lbl) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "%d installed application(s) available.", count);
+        gtk_label_set_text(GTK_LABEL(st->status_lbl), buf);
+    }
+}
+
+static gboolean on_deferred_add_remove_reload(gpointer data) {
+    AddRemoveState *st = (AddRemoveState *)data;
+    reload_add_remove_programs(st);
+    return G_SOURCE_REMOVE;
+}
+
+static void on_uninstall_clicked(GtkButton *btn, gpointer data) {
+    (void)btn;
+    AddRemoveState *st = (AddRemoveState *)data;
+    GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(st->tree_view));
+    GtkTreeModel *model;
+    GtkTreeIter iter;
+    if (gtk_tree_selection_get_selected(sel, &model, &iter)) {
+        char *name = NULL, *app_id = NULL;
+        gtk_tree_model_get(model, &iter, 1, &name, 4, &app_id, -1);
+        if (app_id && *app_id) {
+            GtkWidget *dialog = gtk_message_dialog_new(GTK_WINDOW(st->win),
+                                                       GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+                                                       GTK_MESSAGE_QUESTION,
+                                                       GTK_BUTTONS_YES_NO,
+                                                       "Are you sure you want to completely remove '%s' and all of its components?",
+                                                       name ? name : app_id);
+            gtk_window_set_title(GTK_WINDOW(dialog), "Confirm File Deletion");
+            gtk_style_context_add_class(gtk_widget_get_style_context(dialog), "win95-window");
+            int response = gtk_dialog_run(GTK_DIALOG(dialog));
+            gtk_widget_destroy(dialog);
+
+            if (response == GTK_RESPONSE_YES) {
+                char cmd[256];
+                snprintf(cmd, sizeof(cmd), "flatpak uninstall -y %s", app_id);
+                chicago_spawn_command(cmd);
+                if (st->status_lbl) {
+                    char buf[128];
+                    snprintf(buf, sizeof(buf), "Removing %s...", name ? name : app_id);
+                    gtk_label_set_text(GTK_LABEL(st->status_lbl), buf);
+                }
+                g_timeout_add_seconds(2, on_deferred_add_remove_reload, st);
+            }
+        }
+        g_free(name);
+        g_free(app_id);
+    }
+}
+
+static void on_update_check_clicked(GtkButton *btn, gpointer data) {
+    (void)btn;
+    AddRemoveState *st = (AddRemoveState *)data;
+    chicago_spawn_command("flatpak update -y >/dev/null 2>&1 &");
+    if (st->status_lbl) gtk_label_set_text(GTK_LABEL(st->status_lbl), "Checking for software updates in the background...");
+}
+
+static void show_add_remove_programs_dialog(gboolean standalone) {
+    AddRemoveState *st = g_malloc0(sizeof(AddRemoveState));
+
+    GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    st->win = win;
+    gtk_window_set_title(GTK_WINDOW(win), "Add/Remove Programs Properties");
+    gtk_window_set_default_size(GTK_WINDOW(win), 500, 480);
+    gtk_window_set_position(GTK_WINDOW(win), GTK_WIN_POS_CENTER);
+    gtk_window_set_keep_above(GTK_WINDOW(win), TRUE);
+    gtk_style_context_add_class(gtk_widget_get_style_context(win), "win95-window");
+    g_signal_connect(win, "destroy", G_CALLBACK(on_dialog_destroy), GINT_TO_POINTER(standalone));
+
+    GtkWidget *root_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_container_set_border_width(GTK_CONTAINER(root_vbox), 8);
+
+    GtkWidget *nb = gtk_notebook_new();
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_container_set_border_width(GTK_CONTAINER(vbox), 8);
+
+    GtkWidget *instruct_lbl = gtk_label_new(
+        "To install a new program from a floppy disk or CD-ROM drive, click Install.\n"
+        "The following software can be automatically removed by Chicago-Wayland.\n"
+        "To remove a program or modify its components, select it from the list and click Add/Remove.");
+    gtk_label_set_xalign(GTK_LABEL(instruct_lbl), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(instruct_lbl), TRUE);
+    gtk_box_pack_start(GTK_BOX(vbox), instruct_lbl, FALSE, FALSE, 0);
+
+    /* Search Filter Entry */
+    GtkWidget *search_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_box_pack_start(GTK_BOX(search_box), gtk_label_new("Search:"), FALSE, FALSE, 0);
+    st->search_entry = gtk_search_entry_new();
+    g_signal_connect(st->search_entry, "search-changed", G_CALLBACK(on_add_remove_search_changed), st);
+    gtk_box_pack_start(GTK_BOX(search_box), st->search_entry, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), search_box, FALSE, FALSE, 0);
+
+    st->store = gtk_list_store_new(6, GDK_TYPE_PIXBUF, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_BOOLEAN);
+    st->filter = GTK_TREE_MODEL_FILTER(gtk_tree_model_filter_new(GTK_TREE_MODEL(st->store), NULL));
+    gtk_tree_model_filter_set_visible_func(st->filter, on_add_remove_filter_func, st, NULL);
+
+    st->tree_view = gtk_tree_view_new_with_model(GTK_TREE_MODEL(st->filter));
+    gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(st->tree_view), TRUE);
+
+    GtkCellRenderer *r_icon = gtk_cell_renderer_pixbuf_new();
+    GtkTreeViewColumn *col_icon = gtk_tree_view_column_new_with_attributes("", r_icon, "pixbuf", 0, NULL);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(st->tree_view), col_icon);
+
+    GtkCellRenderer *r_name = gtk_cell_renderer_text_new();
+    GtkTreeViewColumn *col_name = gtk_tree_view_column_new_with_attributes("Program Name", r_name, "text", 1, NULL);
+    gtk_tree_view_column_set_expand(col_name, TRUE);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(st->tree_view), col_name);
+
+    GtkCellRenderer *r_ver = gtk_cell_renderer_text_new();
+    GtkTreeViewColumn *col_ver = gtk_tree_view_column_new_with_attributes("Version", r_ver, "text", 2, NULL);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(st->tree_view), col_ver);
+
+    GtkCellRenderer *r_size = gtk_cell_renderer_text_new();
+    GtkTreeViewColumn *col_size = gtk_tree_view_column_new_with_attributes("Installed Size", r_size, "text", 3, NULL);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(st->tree_view), col_size);
+
+    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_size_request(scroll, -1, 180);
+    gtk_container_add(GTK_CONTAINER(scroll), st->tree_view);
+    gtk_style_context_add_class(gtk_widget_get_style_context(scroll), "win95-inset");
+    gtk_box_pack_start(GTK_BOX(vbox), scroll, TRUE, TRUE, 0);
+
+    /* Action Buttons Row */
+    GtkWidget *act_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *uninst_btn = gtk_button_new_with_label("Add/Remove...");
+    GtkWidget *update_btn = gtk_button_new_with_label("Check for Updates");
+    gtk_widget_set_size_request(uninst_btn, 110, 24);
+    gtk_widget_set_size_request(update_btn, 130, 24);
+
+    g_signal_connect(uninst_btn, "clicked", G_CALLBACK(on_uninstall_clicked), st);
+    g_signal_connect(update_btn, "clicked", G_CALLBACK(on_update_check_clicked), st);
+
+    gtk_box_pack_start(GTK_BOX(act_row), uninst_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(act_row), update_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), act_row, FALSE, FALSE, 0);
+
+    st->status_lbl = gtk_label_new("Ready.");
+    gtk_label_set_xalign(GTK_LABEL(st->status_lbl), 0.0f);
+    gtk_box_pack_start(GTK_BOX(vbox), st->status_lbl, FALSE, FALSE, 0);
+
+    gtk_notebook_append_page(GTK_NOTEBOOK(nb), vbox, gtk_label_new("Install/Uninstall"));
+    gtk_box_pack_start(GTK_BOX(root_vbox), nb, TRUE, TRUE, 0);
+
+    GtkWidget *btn_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *ok_btn = gtk_button_new_with_label("OK");
+    GtkWidget *cancel_btn = gtk_button_new_with_label("Cancel");
+    gtk_widget_set_size_request(ok_btn, 75, 23);
+    gtk_widget_set_size_request(cancel_btn, 75, 23);
+    g_signal_connect_swapped(ok_btn, "clicked", G_CALLBACK(gtk_widget_destroy), win);
+    g_signal_connect_swapped(cancel_btn, "clicked", G_CALLBACK(gtk_widget_destroy), win);
+    gtk_box_pack_end(GTK_BOX(btn_row), cancel_btn, FALSE, FALSE, 0);
+    gtk_box_pack_end(GTK_BOX(btn_row), ok_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(root_vbox), btn_row, FALSE, FALSE, 0);
+
+    gtk_container_add(GTK_CONTAINER(win), root_vbox);
+    gtk_widget_show_all(win);
+
+    reload_add_remove_programs(st);
+}
+
+/* =========================================================================
+ * 9. AUTHENTIC WINDOWS 95 CONTROL PANEL FOLDER WINDOW (DEFAULT MODE)
  * ========================================================================= */
 
 typedef struct {
@@ -1880,8 +2886,8 @@ typedef struct {
 } ControlApplet;
 
 static const ControlApplet g_applets[] = {
-    { "Display",            "preferences-desktop-display", "Changes the desktop background, color scheme, and multi-monitor resolution.", 1 },
-    { "Sounds and Audio",   "preferences-desktop-sound",   "Changes speaker volume, microphone input, and Windows 95 sound scheme.", 2 },
+    { "Display",            "preferences-desktop-display", "Changes the desktop background, color scheme, multi-monitor resolution, and night light.", 1 },
+    { "Sounds and Audio",   "preferences-desktop-sound",   "Changes speaker volume, microphone input, preferred audio devices, and Windows 95 sound scheme.", 2 },
     { "Network",            "preferences-system-network",  "Configures wireless Wi-Fi networks and active network adapters.", 3 },
     { "Power Management",   "preferences-system-power",    "Configures screen brightness, power saver/performance scheme, and battery meter.", 4 },
     { "Mouse",              "input-mouse",                 "Changes touchpad tap-to-click, natural scrolling, and pointer settings.", 5 },
@@ -1889,7 +2895,9 @@ static const ControlApplet g_applets[] = {
     { "Date/Time",          "preferences-system-time",     "Changes the system date, time, and calendar settings.", 7 },
     { "System",             "computer",                    "Displays system hardware specifications and live power/CPU efficiency.", 8 },
     { "Taskbar & Start",    "preferences-desktop",         "Configures the Windows 95 taskbar and Start menu options.", 9 },
-    { "Add/Remove Programs", "system-software-install",    "Searches and launches installed applications on your system.", 10 },
+    { "Add/Remove Programs", "software-manager",           "Installs or removes applications, manages Flatpaks, and checks for updates.", 10 },
+    { "Wireless & Bluetooth", "preferences-system-bluetooth", "Configures Bluetooth radio and connects wireless peripherals and headphones.", 11 },
+    { "Default Programs",   "internet-web-browser",        "Configures default web browser, terminal, file manager, and file associations.", 12 },
 };
 #define NUM_APPLETS (G_N_ELEMENTS(g_applets))
 
@@ -1904,7 +2912,9 @@ static void open_applet_by_id(int id) {
         case 7: show_datetime_properties_dialog(FALSE); break;
         case 8: show_system_properties_dialog(FALSE); break;
         case 9: show_taskbar_properties_dialog(FALSE); break;
-        case 10: build_find_dialog(FALSE); break;
+        case 10: show_add_remove_programs_dialog(FALSE); break;
+        case 11: show_bluetooth_properties_dialog(FALSE); break;
+        case 12: show_defaults_properties_dialog(FALSE); break;
         default: break;
     }
 }
@@ -2455,6 +3465,28 @@ int main(int argc, char **argv) {
             return 0;
         } else if (g_strcmp0(argv[i], "--help-viewer") == 0) {
             build_help_dialog();
+            gtk_main();
+            return 0;
+        } else if (g_strcmp0(argv[i], "--bluetooth") == 0 ||
+                   (g_strcmp0(argv[i], "--tab") == 0 && i + 1 < argc && g_strcmp0(argv[i + 1], "bluetooth") == 0)) {
+            show_bluetooth_properties_dialog(TRUE);
+            gtk_main();
+            return 0;
+        } else if (g_strcmp0(argv[i], "--defaults") == 0 ||
+                   g_strcmp0(argv[i], "--default-apps") == 0 ||
+                   (g_strcmp0(argv[i], "--tab") == 0 && i + 1 < argc && g_strcmp0(argv[i + 1], "defaults") == 0)) {
+            show_defaults_properties_dialog(TRUE);
+            gtk_main();
+            return 0;
+        } else if (g_strcmp0(argv[i], "--programs") == 0 ||
+                   g_strcmp0(argv[i], "--add-remove") == 0 ||
+                   (g_strcmp0(argv[i], "--tab") == 0 && i + 1 < argc && g_strcmp0(argv[i + 1], "programs") == 0)) {
+            show_add_remove_programs_dialog(TRUE);
+            gtk_main();
+            return 0;
+        } else if (g_strcmp0(argv[i], "--night-light") == 0 ||
+                   (g_strcmp0(argv[i], "--tab") == 0 && i + 1 < argc && g_strcmp0(argv[i + 1], "nightlight") == 0)) {
+            show_display_properties_dialog(TRUE, 3);
             gtk_main();
             return 0;
         }
