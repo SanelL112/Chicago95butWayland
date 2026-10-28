@@ -2488,6 +2488,45 @@ static gboolean on_bar_window_button_press(GtkWidget *widget, GdkEventButton *ev
     return FALSE;
 }
 
+/* Pinned launcher click: focus/restore an already-running window of the app,
+ * otherwise launch it. (Single-instance apps like Signal ignore a relaunch
+ * while minimized, so the click would otherwise appear to do nothing.) */
+static gboolean pin_matches_toplevel(ChicagoPinEntry *p, ToplevelItem *t) {
+    if (!p || !t || !t->app_id || !*t->app_id) return FALSE;
+    if (p->icon && g_ascii_strcasecmp(p->icon, t->app_id) == 0) return TRUE;
+    if (p->name && g_ascii_strcasecmp(p->name, t->app_id) == 0) return TRUE;
+    if (p->desktop_path && *p->desktop_path) {
+        char *b = g_path_get_basename(p->desktop_path);
+        char *dot = strrchr(b, '.');
+        if (dot && strcmp(dot, ".desktop") == 0) *dot = '\0';
+        gboolean m = g_ascii_strcasecmp(b, t->app_id) == 0;
+        g_free(b);
+        if (m) return TRUE;
+    }
+    return FALSE;
+}
+
+static void on_pin_btn_clicked(GtkWidget *btn, gpointer data) {
+    ChicagoPinEntry *p = (ChicagoPinEntry *)data;
+    for (GList *l = g_tb.toplevels; l; l = l->next) {
+        ToplevelItem *t = (ToplevelItem *)l->data;
+        if (t->handle && pin_matches_toplevel(p, t)) {
+            hide_all_popups();
+            zwlr_foreign_toplevel_handle_v1_unset_minimized(t->handle);
+            if (g_tb.wl_seat) zwlr_foreign_toplevel_handle_v1_activate(t->handle, g_tb.wl_seat);
+            wl_display_flush(g_tb.wl_display);
+            return;
+        }
+    }
+    on_launch_cmd_btn(btn, p->exec);
+}
+
+static void pin_entry_closure_free(gpointer data, GClosure *closure) {
+    (void)closure;
+    ChicagoPinEntry *p = (ChicagoPinEntry *)data;
+    g_free(p->name); g_free(p->icon); g_free(p->exec); g_free(p->desktop_path); g_free(p);
+}
+
 static void populate_pins_for_bar(BarInstance *bi) {
     if (!bi || !bi->pins_box) return;
     clear_container(bi->pins_box);
@@ -2518,8 +2557,11 @@ static void populate_pins_for_bar(BarInstance *bi) {
         gtk_container_add(GTK_CONTAINER(qbtn), gtk_image_new_from_pixbuf(qpb));
         if (qpb) g_object_unref(qpb);
 
-        g_signal_connect_data(qbtn, "clicked", G_CALLBACK(on_launch_cmd_btn),
-                              g_strdup(p->exec), free_closure_str, 0);
+        ChicagoPinEntry *pc = g_malloc0(sizeof(ChicagoPinEntry));
+        pc->name = g_strdup(p->name); pc->icon = g_strdup(p->icon);
+        pc->exec = g_strdup(p->exec ? p->exec : ""); pc->desktop_path = g_strdup(p->desktop_path);
+        g_signal_connect_data(qbtn, "clicked", G_CALLBACK(on_pin_btn_clicked),
+                              pc, pin_entry_closure_free, 0);
 
         AppRowCtx *rc = g_malloc0(sizeof(AppRowCtx));
         rc->name = g_strdup(p->name ? p->name : "App");
